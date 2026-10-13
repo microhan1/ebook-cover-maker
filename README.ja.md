@@ -4,6 +4,8 @@
 
 タイトル・著者・出版社名を入力するだけで、セルフ出版プラットフォームの審査規格（幅 600〜1000px、下部に出版社名。upaper.net の要件）に合う電子書籍の表紙画像を作ります。デザインツールではなく、規格を通すための表紙ジェネレーターです。サーバー不要、インストール不要、元の EPUB と背景画像は一切変更しません。
 
+![電子書籍表紙メーカーの画面：入力、デザイン、プレビュー、EPUBに入れる](docs/app.png)
+
 ![4つのテンプレート](docs/templates.png)
 
 ## ダウンロード
@@ -53,10 +55,12 @@ python main.py --title "タイトル" --author "著者" --publisher "出版社" 
 
 ## シリーズ
 
-- しおりツール: [スキャンPDF補正](https://github.com/microhan1/scan-pdf-cleanup) · [見開き分割](https://github.com/microhan1/scan-pdf-split) · [余白カット](https://github.com/microhan1/scan-pdf-crop) · [電子書籍ファイル名整理](https://github.com/microhan1/ebook-renamer)
+- しおりツール: [スキャンPDF補正](https://github.com/microhan1/scan-pdf-cleanup) · [見開き分割](https://github.com/microhan1/scan-pdf-split) · [余白カット](https://github.com/microhan1/TrimPDF) · 電子書籍ファイル名整理（近日公開）
 - インストール不要のブラウザ版: [見開き分割](https://microhan1.github.io/spread-split/)
-- [しおりライブラリ](https://github.com/microhan1/chaekgalpi)
+- [しおりライブラリ](https://chaekgalpi.co.kr/tools/ebookcover?utm_source=github&utm_medium=referral&utm_campaign=tool_cta&utm_content=ebookcover) — 読んだ本と読書メモを記録するウェブサービス。
 
 ## ライセンス
 
 MIT。[LICENSE](LICENSE) を参照。フォントは OFL（`fonts/`）。
+
+サードパーティのライセンスは [THIRD_PARTY_LICENSES.txt](THIRD_PARTY_LICENSES.txt) にあります。

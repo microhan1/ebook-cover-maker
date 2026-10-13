@@ -1,5 +1,10 @@
 {
   "app_title": "Ebook Cover Maker",
+  "app_tagline": "Enter a title, author and publisher to get a cover that passes self-publishing checks",
+  "step_input": "1. Details",
+  "step_design": "2. Design",
+  "step_preview": "3. Preview",
+  "step_epub": "4. Put it into an EPUB (optional)",
   "lbl_language": "Language",
   "drop_hint": "You can also drop a background image (JPG/PNG) or an EPUB file onto this window.",
   "field_title": "Title",

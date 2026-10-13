@@ -48,6 +48,7 @@ class FakeEvent:
 
 ERRORS: list = []
 PREVIEW_DONE = [0]
+APPLIED_GEN = [0]            # the newest render that was actually shown
 APP: "gui.App | None" = None
 _ORIG_HOOK = threading.excepthook
 
@@ -73,8 +74,18 @@ def setUpModule():
         original(gen, result, error)
         if applied:
             PREVIEW_DONE[0] += 1
+            APPLIED_GEN[0] = max(APPLIED_GEN[0], gen)
 
     APP._preview_done = counted
+
+
+def wait_preview(app, timeout: float = 4.0) -> bool:
+    """Wait for the preview of the *current* options: first for the debounced
+    refresh to start, then for that very render to be shown. (An older render
+    that was already in flight must not count.)"""
+    ok = pump(app, lambda: app._preview_job is None, timeout)
+    gen = app.preview_gen
+    return ok and pump(app, lambda: APPLIED_GEN[0] >= gen, timeout)
 
 
 def tearDownModule():
@@ -167,10 +178,8 @@ class GuiCase(unittest.TestCase):
     def settle(self, timeout: float = 4.0):
         """Wait until the preview for the current options has been shown."""
         a = self.app
-        marker = PREVIEW_DONE[0]
         a._schedule_preview()
-        ok = pump(a, lambda: a._preview_job is None and PREVIEW_DONE[0] > marker, timeout)
-        self.assertTrue(ok, "the preview never finished")
+        self.assertTrue(wait_preview(a, timeout), "the preview never finished")
 
     def log_text(self) -> str:
         return self.app.txt_log.get("1.0", "end")
@@ -266,6 +275,7 @@ class Languages(GuiCase):
         self.assertIn("×", a.lbl_status.cget("text"))
 
     def test_no_text_is_cut_off_in_any_language_or_window_size(self):
+        self.maxDiff = None
         a = self.app
         a.root.deiconify()
         problems = []
@@ -276,6 +286,7 @@ class Languages(GuiCase):
                 a._on_lang()
                 a.var_publisher.set("")                       # also shows the warning label
                 a.var_title.set("가" * 300)
+                self.settle()                                  # the warning lines appear only after the render
                 a.root.update()
                 for widget, key, attr in a._texts:
                     if widget.winfo_width() < widget.winfo_reqwidth() - 1:
@@ -287,11 +298,18 @@ class Languages(GuiCase):
                         if font.measure(i18n.t(k)) > room:
                             problems.append((size, lang, k, "combobox", font.measure(i18n.t(k)), room))
                 for lbl in (a.lbl_pub_warn, a.lbl_warn, a.lbl_drop, a.lbl_status):
+                    if not lbl.winfo_ismapped():
+                        continue                               # a folded-away label has no position
                     right = lbl.winfo_rootx() + lbl.winfo_reqwidth()
                     if lbl.winfo_reqwidth() > a.root.winfo_width():
                         problems.append((size, lang, "label wider than the window", str(lbl)))
-                    if lbl.winfo_x() + lbl.winfo_width() > a.root.winfo_width() + 2:
+                    if lbl.winfo_rootx() - a.root.winfo_rootx() + lbl.winfo_width() > a.root.winfo_width() + 2:
                         problems.append((size, lang, "label outside the window", str(lbl)))
+                for w in [a.txt_log, a.btn_save, a.btn_epub, a.lbl_status, a.cmb_font, a.lbl_drop, *a.entries.values()]:
+                    bottom = w.winfo_rooty() - a.root.winfo_rooty() + w.winfo_height()
+                    right = w.winfo_rootx() - a.root.winfo_rootx() + w.winfo_width()
+                    if bottom > a.root.winfo_height() + 2 or right > a.root.winfo_width() + 2:
+                        problems.append((size, lang, "widget sticks out of the window", str(w), bottom, right))
         a.root.withdraw()
         self.assertEqual(problems, [])
 
@@ -376,14 +394,13 @@ class Preview(GuiCase):
         self.settle()
         times = []
         for i in range(16):
-            marker = PREVIEW_DONE[0]
             t0 = time.perf_counter()
             if i % 4 == 0:
                 a.cmb_template.current(i // 4 % 4)
                 a._on_change()
             else:
                 a.var_title.set(f"별을 세는 밤 {i} 우리가 잊어버린 이야기")
-            ok = pump(a, lambda: PREVIEW_DONE[0] > marker and a._preview_job is None, 3)
+            ok = wait_preview(a, 3)
             self.assertTrue(ok)
             times.append(time.perf_counter() - t0)
         times.sort()
@@ -400,10 +417,9 @@ class Preview(GuiCase):
         self.settle(timeout=10)
         times = []
         for i in range(6):
-            marker = PREVIEW_DONE[0]
             t0 = time.perf_counter()
             a.var_title.set(f"t{i}")
-            pump(a, lambda: PREVIEW_DONE[0] > marker and a._preview_job is None, 3)
+            wait_preview(a, 3)
             times.append(time.perf_counter() - t0)
         self.assertLess(sorted(times)[len(times) // 2], 0.30, [round(t, 2) for t in times])
 
@@ -419,11 +435,10 @@ class Preview(GuiCase):
             return result
 
         with mock.patch.object(render, "render", slow):
-            marker = PREVIEW_DONE[0]
             a.var_title.set("AAA")
             sleep_pump(a, 0.35)                                   # AAA's render has started and is slow
             a.var_title.set("BBB")
-            pump(a, lambda: PREVIEW_DONE[0] > marker and a._preview_job is None, 3)
+            wait_preview(a, 3)
             sleep_pump(a, 1.2)                                    # long enough for AAA to finish
         expect = render.to_bytes(real(a.options()).image, "png")
         self.assertEqual(render.to_bytes(a._last_result.image, "png"), expect, "an outdated render replaced the new one")
@@ -440,11 +455,10 @@ class Preview(GuiCase):
             return real(opts)
 
         with mock.patch.object(render, "render", counting):
-            marker = PREVIEW_DONE[0]
             for i in range(40):
                 a.var_title.set("글" * (i % 10 + 1))
                 sleep_pump(a, 0.02)
-            pump(a, lambda: PREVIEW_DONE[0] > marker and a._preview_job is None, 3)
+            wait_preview(a, 3)
             sleep_pump(a, 0.3)
         self.assertLessEqual(len(calls), 10, f"{len(calls)} renders for 40 keystrokes")
         self.assertEqual(calls[-1], "글" * 10)

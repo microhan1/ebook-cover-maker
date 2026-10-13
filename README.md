@@ -4,6 +4,8 @@
 
 제목·저자·출판사명만 입력하면 유페이퍼 검수 규격(가로 600~1000px, 하단 출판사명)에 맞는 전자책 표지 이미지를 만들어 줍니다. 디자인 툴이 아니라 규격 통과용 표지 생성기입니다. 서버 없음, 설치 없음, 원본 EPUB과 배경 이미지 무수정.
 
+![전자책 표지 만들기 화면: 입력, 디자인, 미리보기, EPUB에 넣기](docs/app.png)
+
 ![템플릿 4종](docs/templates.png)
 
 ## 다운로드
@@ -53,10 +55,12 @@ python main.py --title "제목" --author "저자" --publisher "출판사" --bg p
 
 ## 시리즈
 
-- 책갈피 툴: [스캔 PDF 보정](https://github.com/microhan1/scan-pdf-cleanup) · [두쪽 나누기](https://github.com/microhan1/scan-pdf-split) · [여백 자르기](https://github.com/microhan1/scan-pdf-crop) · [전자책 파일명 정리](https://github.com/microhan1/ebook-renamer)
+- 책갈피 툴: [스캔 PDF 보정](https://github.com/microhan1/scan-pdf-cleanup) · [두쪽 나누기](https://github.com/microhan1/scan-pdf-split) · [여백 자르기](https://github.com/microhan1/TrimPDF) · 전자책 파일명 정리(곧 공개)
 - 설치 없이 브라우저에서 쓰는 웹판: [펼침면 나누기](https://microhan1.github.io/spread-split/)
-- [책갈피 라이브러리](https://github.com/microhan1/chaekgalpi)
+- [책갈피 라이브러리](https://chaekgalpi.co.kr/tools/ebookcover?utm_source=github&utm_medium=referral&utm_campaign=tool_cta&utm_content=ebookcover) — 읽은 책과 독서록을 기록하는 웹 서비스.
 
 ## 라이선스
 
 MIT. [LICENSE](LICENSE) 참조. 글꼴은 OFL(`fonts/`).
+
+서드파티 라이선스는 [THIRD_PARTY_LICENSES.txt](THIRD_PARTY_LICENSES.txt)에 있습니다.

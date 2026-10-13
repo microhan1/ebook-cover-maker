@@ -1,5 +1,10 @@
 {
   "app_title": "電子書籍表紙メーカー",
+  "app_tagline": "タイトル・著者・出版社名を入れるだけで、審査規格に合う表紙ができます",
+  "step_input": "① 入力",
+  "step_design": "② デザイン",
+  "step_preview": "③ プレビュー",
+  "step_epub": "④ EPUBに入れる（任意）",
   "lbl_language": "言語",
   "drop_hint": "背景画像（JPG/PNG）やEPUBファイルをこのウィンドウにドロップすることもできます。",
   "field_title": "タイトル",

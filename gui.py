@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 import threading
 import tkinter as tk
 import tkinter.font as tkfont
 from tkinter import colorchooser, filedialog, messagebox, ttk
 
-from PIL import Image, ImageTk
+from PIL import Image, ImageOps, ImageTk
 
 import epub_insert
 import i18n
@@ -25,10 +26,41 @@ try:
 except Exception:  # pragma: no cover - optional dependency
     _HAS_DND = False
 
+BG = "#f3f4f6"
+CARD = "#ffffff"
+BORDER = "#d1d5db"
+TEXT = "#1f2937"
+MUTED = "#6b7280"
+ACCENT = "#2563eb"
+ACCENT_DARK = "#1d4ed8"
+NOTICE = "#d97706"
+NOTICE_DARK = "#b45309"          # warning text: NOTICE itself is too pale for small text on white
+PREVIEW_BG = "#e5e7eb"
+UI_FONTS = {
+    "ko": ("Malgun Gothic",),
+    "ja": ("Yu Gothic UI", "Meiryo UI", "MS UI Gothic"),
+    "zh-CN": ("Microsoft YaHei UI", "Microsoft YaHei", "SimHei"),
+    "en": ("Segoe UI",),
+}
 PREVIEW_DEBOUNCE_MS = 150          # the preview must follow a change within 0.3 s (render ~10 ms + display)
 IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif", ".tif", ".tiff")
 OPTION_KEYS = ("publisher", "author", "series", "preset", "width", "height", "template", "color",
                "bg_color", "fg_color", "font", "fmt")
+
+
+def _enable_dpi_awareness() -> None:
+    """Crisp text on high-DPI screens instead of a bitmap-stretched window."""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+
+        try:
+            ctypes.windll.shcore.SetProcessDpiAwareness(1)
+        except Exception:
+            ctypes.windll.user32.SetProcessDPIAware()
+    except Exception:
+        pass
 
 
 def _saved_options(settings: dict) -> Options:
@@ -50,9 +82,11 @@ def _saved_options(settings: dict) -> Options:
 
 class App:
     def __init__(self, bg_image: str | None = None, epub: str | None = None) -> None:
+        _enable_dpi_awareness()
         self.root = TkinterDnD.Tk() if _HAS_DND else tk.Tk()
-        self.root.geometry("1120x780")
-        self.root.minsize(980, 700)
+        self.scale = max(1.0, min(3.0, self.root.winfo_fpixels("1i") / 96.0))
+        self.root.geometry(f"{self.px(1120)}x{self.px(800)}")
+        self.root.minsize(self.px(1000), self.px(720))
 
         self.worker: threading.Thread | None = None
         self.preview_gen = 0
@@ -92,6 +126,7 @@ class App:
         self._color = saved.color
         self._font = saved.font
 
+        self._style()
         self._build()
         self._apply_texts()
         for var in (self.var_title, self.var_subtitle, self.var_author, self.var_publisher, self.var_series,
@@ -103,167 +138,298 @@ class App:
         self._preview_job = self.root.after(50, self._refresh_preview)
 
     # ------------------------------------------------------------ building
+    def px(self, n: int) -> int:
+        return int(round(n * self.scale))
+
     def _reg(self, widget: tk.Misc, key: str, attr: str = "text") -> tk.Misc:
         self._texts.append((widget, key, attr))
         return widget
 
-    def _combo(self, parent: tk.Misc, keys: list[str], index: int, command, width: int = 26) -> ttk.Combobox:
+    def _combo(self, parent: tk.Misc, keys: list[str], index: int, command, width: int = 20) -> ttk.Combobox:
         cmb = ttk.Combobox(parent, state="readonly", width=width, values=[t(k) for k in keys])
         cmb.current(index)
         cmb.bind("<<ComboboxSelected>>", lambda e: command())
         self._combos.append((cmb, keys))
         return cmb
 
+    def _apply_fonts(self) -> None:
+        """Japanese and Chinese text in the default font falls back to a spaced-out
+        bitmap-like face; use the system UI font of the chosen language instead."""
+        try:
+            available = set(tkfont.families(self.root))
+        except tk.TclError:
+            return
+        family = next((f for f in UI_FONTS.get(i18n.current_lang(), ()) if f in available), None)
+        if family is None:
+            return
+        for f in (self.font_body, self.font_bold, self.font_title, self.font_small):
+            f.configure(family=family)
+        for name in ("TkDefaultFont", "TkTextFont", "TkMenuFont", "TkHeadingFont"):
+            try:
+                tkfont.nametofont(name).configure(family=family)
+            except tk.TclError:
+                pass
+
+    def _style(self) -> None:
+        """The shared Chaekgalpi look: clam theme, light gray page, white cards, one blue main button."""
+        style = ttk.Style(self.root)
+        try:
+            style.theme_use("clam")
+        except tk.TclError:
+            pass
+        base = tkfont.nametofont("TkDefaultFont")
+        self.font_body = base.copy()
+        self.font_body.configure(size=10)
+        self.font_bold = base.copy()
+        self.font_bold.configure(size=10, weight="bold")
+        self.font_title = base.copy()
+        self.font_title.configure(size=16, weight="bold")
+        self.font_small = base.copy()
+        self.font_small.configure(size=9)
+        for name in ("TkDefaultFont", "TkTextFont", "TkMenuFont", "TkHeadingFont"):
+            try:
+                tkfont.nametofont(name).configure(size=10)
+            except tk.TclError:
+                pass
+        self.root.configure(background=BG)
+        pad = (self.px(10), self.px(5))
+        style.configure(".", background=BG, foreground=TEXT, font=self.font_body, bordercolor=BORDER,
+                        lightcolor=BG, darkcolor=BG, troughcolor="#e5e7eb", focuscolor=ACCENT)
+        style.configure("TFrame", background=BG)
+        style.configure("Card.TFrame", background=CARD, relief="solid", borderwidth=1, bordercolor=BORDER,
+                        lightcolor=BORDER, darkcolor=BORDER)
+        style.configure("TLabel", background=BG)
+        style.configure("Card.TLabel", background=CARD)
+        style.configure("Muted.TLabel", foreground=MUTED)
+        style.configure("Title.TLabel", font=self.font_title)
+        style.configure("Section.TLabel", background=CARD, font=self.font_bold)
+        style.configure("Small.TLabel", font=self.font_small, foreground=MUTED)
+        style.configure("CardSmall.TLabel", background=CARD, font=self.font_small, foreground=MUTED)
+        style.configure("Warn.TLabel", background=CARD, font=self.font_small, foreground=NOTICE_DARK)
+        style.configure("TSeparator", background=BORDER)
+        style.configure("TButton", padding=pad, background=CARD, bordercolor=BORDER, lightcolor=CARD, darkcolor=CARD)
+        style.map("TButton", background=[("active", "#eef2ff"), ("disabled", "#f3f4f6")],
+                  foreground=[("disabled", "#9ca3af")])
+        style.configure("Small.TButton", font=self.font_small, padding=(self.px(8), self.px(3)))
+        style.configure("Accent.TButton", background=ACCENT, foreground="white", bordercolor=ACCENT,
+                        lightcolor=ACCENT, darkcolor=ACCENT, font=self.font_bold,
+                        padding=(self.px(22), self.px(8)))
+        style.map("Accent.TButton", background=[("active", ACCENT_DARK), ("disabled", "#93c5fd")],
+                  foreground=[("disabled", "white")], bordercolor=[("disabled", "#93c5fd")])
+        style.configure("Card.TRadiobutton", background=CARD, indicatorsize=self.px(13))
+        style.map("Card.TRadiobutton", background=[("active", CARD)])
+        for widget in ("TCombobox", "TSpinbox"):
+            style.configure(widget, fieldbackground=CARD, background=CARD, arrowcolor=MUTED, bordercolor=BORDER,
+                            lightcolor=CARD, darkcolor=CARD, padding=(self.px(6), self.px(3)))
+        style.map("TCombobox", fieldbackground=[("readonly", CARD), ("disabled", "#f3f4f6")],
+                  background=[("readonly", CARD)], foreground=[("readonly", TEXT), ("disabled", "#9ca3af")],
+                  selectbackground=[("readonly", CARD)], selectforeground=[("readonly", TEXT)],
+                  bordercolor=[("focus", ACCENT)])
+        style.map("TSpinbox", fieldbackground=[("disabled", "#f3f4f6")], foreground=[("disabled", "#9ca3af")],
+                  bordercolor=[("focus", ACCENT)])
+        style.configure("TEntry", fieldbackground=CARD, bordercolor=BORDER, lightcolor=CARD, darkcolor=CARD,
+                        padding=(self.px(6), self.px(4)))
+        style.map("TEntry", bordercolor=[("focus", ACCENT)], fieldbackground=[("readonly", "#f9fafb")])
+        style.configure("Vertical.TScrollbar", background="#e5e7eb", troughcolor=BG, bordercolor=BG)
+
+    def _card(self, parent: tk.Misc, title_key: str) -> ttk.Frame:
+        """A white card with a section title and a hairline under it. Content starts at row 2."""
+        card = ttk.Frame(parent, style="Card.TFrame", padding=(self.px(16), self.px(12), self.px(16), self.px(14)))
+        card.columnconfigure(1, weight=1)
+        self._reg(ttk.Label(card, style="Section.TLabel"), title_key).grid(row=0, column=0, columnspan=2, sticky="w")
+        ttk.Separator(card).grid(row=1, column=0, columnspan=2, sticky="ew", pady=(self.px(6), self.px(8)))
+        return card
+
+    def _field(self, card: ttk.Frame, row: int, key: str, widget: tk.Misc, pady: int = 3) -> None:
+        self._reg(ttk.Label(card, style="Card.TLabel"), key).grid(
+            row=row, column=0, sticky="w", padx=(0, self.px(12)), pady=self.px(pady))
+        widget.grid(row=row, column=1, sticky="ew", pady=self.px(pady))
+
+    def _autowrap(self, label: tk.Misc, container: tk.Misc, margin: int) -> None:
+        """Keep a label's wrapping in step with the width of the box that holds it."""
+        container.bind("<Configure>", lambda e: label.configure(wraplength=max(120, e.width - self.px(margin))), add="+")
+
     def _build(self) -> None:
         root = self.root
-        root.columnconfigure(1, weight=1)
-        root.rowconfigure(1, weight=1)
+        root.columnconfigure(0, weight=1)
+        root.rowconfigure(0, weight=1)
+        main = ttk.Frame(root, padding=(self.px(20), self.px(16), self.px(20), self.px(16)))
+        main.grid(row=0, column=0, sticky="nsew")
+        main.columnconfigure(1, weight=1)
+        main.rowconfigure(1, weight=1)
 
-        # ---- header
-        head = ttk.Frame(root, padding=(12, 10, 12, 4))
-        head.grid(row=0, column=0, columnspan=2, sticky="ew")
+        # ---- header: title, one-line promise, language
+        head = ttk.Frame(main)
+        head.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, self.px(14)))
         head.columnconfigure(0, weight=1)
-        family = tkfont.nametofont("TkDefaultFont").actual("family")
-        self._reg(ttk.Label(head, font=(family, 15, "bold")), "app_title").grid(row=0, column=0, sticky="w")
-        self._reg(ttk.Label(head), "lbl_language").grid(row=0, column=1, padx=(0, 6))
-        self.cmb_lang = ttk.Combobox(head, state="readonly", width=10, textvariable=self.var_lang,
+        self._reg(ttk.Label(head, style="Title.TLabel"), "app_title").grid(row=0, column=0, sticky="w")
+        self._reg(ttk.Label(head, style="Muted.TLabel"), "app_tagline").grid(row=1, column=0, sticky="w")
+        lang = ttk.Frame(head)
+        lang.grid(row=0, column=1, rowspan=2, sticky="e")
+        self._reg(ttk.Label(lang, style="Muted.TLabel"), "lbl_language").pack(side="left", padx=(0, self.px(8)))
+        self.cmb_lang = ttk.Combobox(lang, state="readonly", width=10, textvariable=self.var_lang,
                                      values=[i18n.LANG_NAMES[c] for c in i18n.LANGS])
-        self.cmb_lang.grid(row=0, column=2)
+        self.cmb_lang.pack(side="left")
         self.cmb_lang.bind("<<ComboboxSelected>>", self._on_lang)
 
-        # ---- form
-        form = ttk.Frame(root, padding=(12, 4))
-        form.grid(row=1, column=0, sticky="nsw")
-        form.columnconfigure(1, weight=1)
-        r = 0
+        # ---- left column: 1) what goes on the cover, 2) how it looks
+        left = ttk.Frame(main)
+        left.grid(row=1, column=0, sticky="ns", padx=(0, self.px(16)))
+        inp = self._card(left, "step_input")
+        inp.grid(row=0, column=0, sticky="ew")
+        inp.columnconfigure(1, minsize=self.px(250))
         self.entries: dict[str, ttk.Entry] = {}
-        for key, var in (("field_title", self.var_title), ("field_subtitle", self.var_subtitle),
-                         ("field_author", self.var_author), ("field_publisher", self.var_publisher),
-                         ("field_series", self.var_series), ("field_volume", self.var_volume)):
-            self._reg(ttk.Label(form), key).grid(row=r, column=0, sticky="w", pady=2)
-            ent = ttk.Entry(form, textvariable=var, width=34)
-            ent.grid(row=r, column=1, columnspan=3, sticky="ew", pady=2)
+        rows = (("field_title", self.var_title), ("field_subtitle", self.var_subtitle),
+                ("field_author", self.var_author), ("field_series", self.var_series),
+                ("field_volume", self.var_volume), ("field_publisher", self.var_publisher))
+        r = 2
+        for key, var in rows:
+            ent = ttk.Entry(inp, textvariable=var)
+            self._field(inp, r, key, ent)
             self.entries[key] = ent
             r += 1
-        self.lbl_pub_warn = ttk.Label(form, foreground="#c0392b", wraplength=360)
-        self.lbl_pub_warn.grid(row=r, column=0, columnspan=4, sticky="w")
-        r += 1
+        self.lbl_pub_warn = ttk.Label(inp, style="Warn.TLabel", wraplength=self.px(400))
+        self.lbl_pub_warn.grid(row=r, column=0, columnspan=2, sticky="w")
 
-        ttk.Separator(form).grid(row=r, column=0, columnspan=4, sticky="ew", pady=6)
-        r += 1
-        self._reg(ttk.Label(form), "preset_label").grid(row=r, column=0, sticky="w", pady=2)
-        self.cmb_preset = self._combo(form, [f"preset_{k}" for k in presets.PRESET_KEYS],
+        des = self._card(left, "step_design")
+        des.grid(row=1, column=0, sticky="ew", pady=(self.px(12), 0))
+        des.columnconfigure(1, minsize=self.px(250))
+        r = 2
+        self.cmb_preset = self._combo(des, [f"preset_{k}" for k in presets.PRESET_KEYS],
                                       presets.PRESET_KEYS.index(self._preset), self._on_preset)
-        self.cmb_preset.grid(row=r, column=1, columnspan=3, sticky="ew", pady=2)
+        self._field(des, r, "preset_label", self.cmb_preset)
         r += 1
-        size = ttk.Frame(form)
-        size.grid(row=r, column=1, columnspan=3, sticky="w")
-        self._reg(ttk.Label(size), "lbl_width").pack(side="left")
+        size = ttk.Frame(des, style="Card.TFrame")
+        size.configure(relief="flat", borderwidth=0)
+        self._reg(ttk.Label(size, style="CardSmall.TLabel"), "lbl_width").pack(side="left")
         self.spn_width = ttk.Spinbox(size, from_=presets.MIN_SIDE, to=presets.MAX_SIDE, width=6,
                                      textvariable=self.var_width)
-        self.spn_width.pack(side="left", padx=(4, 10))
-        self._reg(ttk.Label(size), "lbl_height").pack(side="left")
+        self.spn_width.pack(side="left", padx=(self.px(6), self.px(14)))
+        self._reg(ttk.Label(size, style="CardSmall.TLabel"), "lbl_height").pack(side="left")
         self.spn_height = ttk.Spinbox(size, from_=presets.MIN_SIDE, to=presets.MAX_SIDE, width=6,
                                       textvariable=self.var_height)
-        self.spn_height.pack(side="left", padx=4)
+        self.spn_height.pack(side="left", padx=(self.px(6), 0))
+        size.grid(row=r, column=1, sticky="w", pady=(0, self.px(3)))
         r += 1
-        self._reg(ttk.Label(form), "template_label").grid(row=r, column=0, sticky="w", pady=2)
-        self.cmb_template = self._combo(form, [f"template_{i}" for i in presets.TEMPLATE_IDS],
+        self.cmb_template = self._combo(des, [f"template_{i}" for i in presets.TEMPLATE_IDS],
                                         presets.TEMPLATE_IDS.index(self._template), self._on_change)
-        self.cmb_template.grid(row=r, column=1, columnspan=3, sticky="ew", pady=2)
+        self._field(des, r, "template_label", self.cmb_template)
         r += 1
-        self._reg(ttk.Label(form), "color_label").grid(row=r, column=0, sticky="w", pady=2)
-        self.cmb_color = self._combo(form, [f"color_{i + 1}" for i in range(len(presets.COLOR_SCHEMES))],
+        self.cmb_color = self._combo(des, [f"color_{i + 1}" for i in range(len(presets.COLOR_SCHEMES))],
                                      self._color - 1, self._on_change)
-        self.cmb_color.grid(row=r, column=1, columnspan=3, sticky="ew", pady=2)
+        self._field(des, r, "color_label", self.cmb_color)
         r += 1
-        colors = ttk.Frame(form)
-        colors.grid(row=r, column=1, columnspan=3, sticky="w")
-        self.btn_bg_color = self._reg(ttk.Button(colors, command=lambda: self._pick_color(self.var_bg_color, "dlg_color_bg")),
+        colors = ttk.Frame(des, style="Card.TFrame")
+        colors.configure(relief="flat", borderwidth=0)
+        self.btn_bg_color = self._reg(ttk.Button(colors, style="Small.TButton",
+                                                 command=lambda: self._pick_color(self.var_bg_color, "dlg_color_bg")),
                                       "btn_bg_color")
         self.btn_bg_color.pack(side="left")
-        self.btn_fg_color = self._reg(ttk.Button(colors, command=lambda: self._pick_color(self.var_fg_color, "dlg_color_fg")),
+        self.btn_fg_color = self._reg(ttk.Button(colors, style="Small.TButton",
+                                                 command=lambda: self._pick_color(self.var_fg_color, "dlg_color_fg")),
                                       "btn_fg_color")
-        self.btn_fg_color.pack(side="left", padx=4)
-        self.btn_color_reset = self._reg(ttk.Button(colors, command=self._reset_colors), "btn_color_reset")
+        self.btn_fg_color.pack(side="left", padx=self.px(6))
+        self.btn_color_reset = self._reg(ttk.Button(colors, style="Small.TButton", command=self._reset_colors),
+                                         "btn_color_reset")
         self.btn_color_reset.pack(side="left")
+        colors.grid(row=r, column=1, sticky="w", pady=(0, self.px(3)))
         r += 1
-        self._reg(ttk.Label(form), "font_label").grid(row=r, column=0, sticky="w", pady=2)
-        self.cmb_font = self._combo(form, [f"font_{k}" for k in presets.FONT_KEYS],
+        self.cmb_font = self._combo(des, [f"font_{k}" for k in presets.FONT_KEYS],
                                     presets.FONT_KEYS.index(self._font), self._on_change)
-        self.cmb_font.grid(row=r, column=1, columnspan=3, sticky="ew", pady=2)
+        self._field(des, r, "font_label", self.cmb_font)
         r += 1
-        self._reg(ttk.Label(form), "bg_image").grid(row=r, column=0, sticky="w", pady=2)
-        self.ent_bg = ttk.Entry(form, textvariable=self.var_bg_image, width=22, state="readonly")
-        self.ent_bg.grid(row=r, column=1, sticky="ew", pady=2)
-        self.btn_bg_browse = self._reg(ttk.Button(form, command=self._browse_bg, width=6), "btn_browse")
-        self.btn_bg_browse.grid(row=r, column=2, padx=(4, 0))
-        self.btn_bg_clear = self._reg(ttk.Button(form, command=lambda: self.var_bg_image.set(""), width=6), "btn_clear")
-        self.btn_bg_clear.grid(row=r, column=3, padx=(4, 0))
+        bg = ttk.Frame(des, style="Card.TFrame")
+        bg.configure(relief="flat", borderwidth=0)
+        bg.columnconfigure(0, weight=1)
+        self.ent_bg = ttk.Entry(bg, textvariable=self.var_bg_image, state="readonly")
+        self.ent_bg.grid(row=0, column=0, sticky="ew")
+        self.btn_bg_browse = self._reg(ttk.Button(bg, style="Small.TButton", command=self._browse_bg), "btn_browse")
+        self.btn_bg_browse.grid(row=0, column=1, padx=(self.px(6), 0))
+        self.btn_bg_clear = self._reg(ttk.Button(bg, style="Small.TButton",
+                                                 command=lambda: self.var_bg_image.set("")), "btn_clear")
+        self.btn_bg_clear.grid(row=0, column=2, padx=(self.px(6), 0))
+        self._field(des, r, "bg_image", bg)
         r += 1
-        self._reg(ttk.Label(form), "lbl_format").grid(row=r, column=0, sticky="w", pady=2)
-        fmts = ttk.Frame(form)
-        fmts.grid(row=r, column=1, columnspan=3, sticky="w")
-        self.rad_jpg = self._reg(ttk.Radiobutton(fmts, variable=self.var_fmt, value="jpg"), "format_jpg")
+        fmts = ttk.Frame(des, style="Card.TFrame")
+        fmts.configure(relief="flat", borderwidth=0)
+        self.rad_jpg = self._reg(ttk.Radiobutton(fmts, style="Card.TRadiobutton", variable=self.var_fmt, value="jpg"),
+                                 "format_jpg")
         self.rad_jpg.pack(side="left")
-        self.rad_png = self._reg(ttk.Radiobutton(fmts, variable=self.var_fmt, value="png"), "format_png")
-        self.rad_png.pack(side="left", padx=8)
-        r += 1
-        ttk.Separator(form).grid(row=r, column=0, columnspan=4, sticky="ew", pady=6)
-        r += 1
-        self._reg(ttk.Label(form), "field_epub").grid(row=r, column=0, sticky="w", pady=2)
-        self.ent_epub = ttk.Entry(form, textvariable=self.var_epub, width=22, state="readonly")
-        self.ent_epub.grid(row=r, column=1, sticky="ew", pady=2)
-        self.btn_epub_browse = self._reg(ttk.Button(form, command=self._browse_epub, width=6), "btn_browse")
-        self.btn_epub_browse.grid(row=r, column=2, padx=(4, 0))
-        self.btn_epub_clear = self._reg(ttk.Button(form, command=lambda: self.var_epub.set(""), width=6), "btn_clear")
-        self.btn_epub_clear.grid(row=r, column=3, padx=(4, 0))
-        r += 1
-        self.lbl_drop = ttk.Label(form, foreground="#666", wraplength=360, justify="left")
+        self.rad_png = self._reg(ttk.Radiobutton(fmts, style="Card.TRadiobutton", variable=self.var_fmt, value="png"),
+                                 "format_png")
+        self.rad_png.pack(side="left", padx=self.px(14))
+        self._field(des, r, "lbl_format", fmts)
+
+        # ---- right column: 3) the big preview, then EPUB, then the actions
+        right = ttk.Frame(main)
+        right.grid(row=1, column=1, sticky="nsew")
+        right.columnconfigure(0, weight=1)
+        right.rowconfigure(0, weight=1)
+        pcard = ttk.Frame(right, style="Card.TFrame", padding=(self.px(16), self.px(12), self.px(16), self.px(12)))
+        pcard.grid(row=0, column=0, sticky="nsew")
+        pcard.columnconfigure(0, weight=1)
+        pcard.rowconfigure(2, weight=1)
+        self._reg(ttk.Label(pcard, style="Section.TLabel"), "step_preview").grid(row=0, column=0, sticky="w")
+        ttk.Separator(pcard).grid(row=1, column=0, sticky="ew", pady=(self.px(6), self.px(10)))
+        self.preview_holder = tk.Frame(pcard, background=PREVIEW_BG, width=self.px(260), height=self.px(320))
+        self.preview_holder.grid(row=2, column=0, sticky="nsew")
+        self.lbl_preview = tk.Label(self.preview_holder, background=PREVIEW_BG, borderwidth=0)
+        self.lbl_preview.place(relx=0.5, rely=0.5, anchor="center")     # placed, so the image never resizes the window
+        self.preview_holder.bind("<Configure>", lambda e: self._show_preview())
+        self.lbl_warn = ttk.Label(pcard, style="Warn.TLabel", justify="left")
+        self.lbl_warn.grid(row=3, column=0, sticky="ew", pady=(self.px(8), 0))
+        self.lbl_warn.grid_remove()
+        self._autowrap(self.lbl_warn, pcard, 34)
+        self.lbl_status = ttk.Label(pcard, style="CardSmall.TLabel", anchor="w")
+        self.lbl_status.grid(row=4, column=0, sticky="ew", pady=(self.px(4), 0))
+
+        ecard = self._card(right, "step_epub")
+        ecard.grid(row=1, column=0, sticky="ew", pady=(self.px(12), 0))
+        epub = ttk.Frame(ecard, style="Card.TFrame")
+        epub.configure(relief="flat", borderwidth=0)
+        epub.columnconfigure(0, weight=1)
+        self.ent_epub = ttk.Entry(epub, textvariable=self.var_epub, state="readonly")
+        self.ent_epub.grid(row=0, column=0, sticky="ew")
+        self.btn_epub_browse = self._reg(ttk.Button(epub, style="Small.TButton", command=self._browse_epub),
+                                         "btn_browse")
+        self.btn_epub_browse.grid(row=0, column=1, padx=(self.px(6), 0))
+        self.btn_epub_clear = self._reg(ttk.Button(epub, style="Small.TButton",
+                                                   command=lambda: self.var_epub.set("")), "btn_clear")
+        self.btn_epub_clear.grid(row=0, column=2, padx=(self.px(6), 0))
+        self._field(ecard, 2, "field_epub", epub)
+        self.lbl_drop = ttk.Label(ecard, style="CardSmall.TLabel", justify="left")
         self._reg(self.lbl_drop, "drop_hint")
-        self.lbl_drop.grid(row=r, column=0, columnspan=4, sticky="w", pady=(8, 0))
+        self.lbl_drop.grid(row=3, column=0, columnspan=2, sticky="w", pady=(self.px(4), 0))
+        self._autowrap(self.lbl_drop, ecard, 34)
 
-        # ---- preview
-        prev = ttk.Frame(root, padding=(4, 4, 12, 4))
-        prev.grid(row=1, column=1, sticky="nsew")
-        prev.columnconfigure(0, weight=1)
-        prev.rowconfigure(0, weight=1)
-        self.lbl_preview = ttk.Label(prev, anchor="center", relief="groove", background="#d9d9d9")
-        self.lbl_preview.grid(row=0, column=0, sticky="nsew")
-        self.lbl_preview.bind("<Configure>", lambda e: self._show_preview())
-
-        # ---- warnings + log
-        self.lbl_warn = ttk.Label(root, foreground="#b9770e", wraplength=1000, justify="left")
-        self.lbl_warn.grid(row=2, column=0, columnspan=2, sticky="ew", padx=12)
-        logf = self._reg(ttk.LabelFrame(root, padding=4), "lbl_log")
-        logf.grid(row=3, column=0, columnspan=2, sticky="ew", padx=12, pady=4)
-        logf.columnconfigure(0, weight=1)
-        self.txt_log = tk.Text(logf, height=3, state="disabled", wrap="none")
-        self.txt_log.grid(row=0, column=0, sticky="ew")
-        lsb = ttk.Scrollbar(logf, command=self.txt_log.yview)
-        lsb.grid(row=0, column=1, sticky="ns")
-        self.txt_log.configure(yscrollcommand=lsb.set)
-
-        # ---- bottom
-        bot = ttk.Frame(root, padding=(12, 4, 12, 10))
-        bot.grid(row=4, column=0, columnspan=2, sticky="ew")
-        bot.columnconfigure(0, weight=1)
-        self.lbl_status = ttk.Label(bot, anchor="w")
-        self.lbl_status.grid(row=0, column=0, sticky="w")
-        self.btn_open = self._reg(ttk.Button(bot, command=self._open_result, state="disabled"), "btn_open_result")
-        self.btn_open.grid(row=0, column=1, padx=(0, 6))
-        self.btn_epub = self._reg(ttk.Button(bot, command=self._insert_epub), "btn_insert_epub")
-        self.btn_epub.grid(row=0, column=2, padx=(0, 6))
-        self.btn_save = self._reg(ttk.Button(bot, command=self._save), "btn_save")
+        bar = ttk.Frame(right)
+        bar.grid(row=2, column=0, sticky="ew", pady=(self.px(12), 0))
+        bar.columnconfigure(1, weight=1)
+        self.btn_open = self._reg(ttk.Button(bar, style="Small.TButton", command=self._open_result, state="disabled"),
+                                  "btn_open_result")
+        self.btn_open.grid(row=0, column=0, sticky="w")
+        self.btn_epub = self._reg(ttk.Button(bar, command=self._insert_epub), "btn_insert_epub")
+        self.btn_epub.grid(row=0, column=2, padx=(0, self.px(8)))
+        self.btn_save = self._reg(ttk.Button(bar, style="Accent.TButton", command=self._save), "btn_save")
         self.btn_save.grid(row=0, column=3)
 
+        logbox = ttk.Frame(right)
+        logbox.grid(row=3, column=0, sticky="ew", pady=(self.px(10), 0))
+        logbox.columnconfigure(0, weight=1)
+        self._reg(ttk.Label(logbox, style="Small.TLabel"), "lbl_log").grid(row=0, column=0, sticky="w")
+        self.txt_log = tk.Text(logbox, height=3, state="disabled", wrap="none", background=CARD, foreground=TEXT,
+                               relief="flat", borderwidth=0, highlightthickness=1, highlightbackground=BORDER,
+                               highlightcolor=BORDER, font=self.font_small, padx=self.px(6), pady=self.px(4))
+        self.txt_log.grid(row=1, column=0, sticky="ew")
+
         if _HAS_DND:
-            for w in (root, self.lbl_preview, self.lbl_drop):
+            for w in (root, self.lbl_preview, self.preview_holder, self.lbl_drop):
                 w.drop_target_register(DND_FILES)
                 w.dnd_bind("<<Drop>>", self._on_drop)
         self._on_preset()
 
     def _apply_texts(self) -> None:
+        self._apply_fonts()
         self.root.title(t("app_title"))
         for widget, key, attr in self._texts:
             try:
@@ -440,17 +606,22 @@ class App:
         self._show_preview()
 
     def _show_warnings(self) -> None:
-        self.lbl_warn.configure(text="\n".join(t(k, **kw) for k, kw in self._last_warnings))
+        text = "\n".join(t(k, **kw) for k, kw in self._last_warnings)
+        self.lbl_warn.configure(text=text)
+        if text:
+            self.lbl_warn.grid()
+        else:
+            self.lbl_warn.grid_remove()
 
     def _show_preview(self) -> None:
         if self._last_result is None:
             return
         img = self._last_result.image
-        w = max(120, self.lbl_preview.winfo_width() - 8)
-        h = max(160, self.lbl_preview.winfo_height() - 8)
+        w = max(120, self.preview_holder.winfo_width() - self.px(24))
+        h = max(160, self.preview_holder.winfo_height() - self.px(24))
         scale = min(w / img.width, h / img.height, 1.0)
         size = (max(1, int(img.width * scale)), max(1, int(img.height * scale)))
-        thumb = img.resize(size, Image.Resampling.LANCZOS)
+        thumb = ImageOps.expand(img.resize(size, Image.Resampling.LANCZOS), border=1, fill="#cbd5e1")
         self._photo = ImageTk.PhotoImage(thumb, master=self.root)      # belongs to this window, not the default root
         self.lbl_preview.configure(image=self._photo)
 

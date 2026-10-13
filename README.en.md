@@ -4,6 +4,8 @@
 
 Type a title, an author and a publisher name and get an ebook cover image that passes self-publishing platform checks (600–1000 px wide, publisher name at the bottom, as required by upaper.net). It is a compliance cover generator, not a design tool. No server, no install, the original EPUB and background image are never modified.
 
+![Ebook Cover Maker window: details, design, preview, put it into an EPUB](docs/app.png)
+
 ![The four templates](docs/templates.png)
 
 ## Download
@@ -53,10 +55,12 @@ The bundled fonts are Noto Sans CJK and Noto Serif CJK (SIL Open Font License 1.
 
 ## Series
 
-- Chaekgalpi Tools: [Scan PDF Cleanup](https://github.com/microhan1/scan-pdf-cleanup) · [Scan PDF Split](https://github.com/microhan1/scan-pdf-split) · [Scan PDF Crop](https://github.com/microhan1/scan-pdf-crop) · [Ebook Renamer](https://github.com/microhan1/ebook-renamer)
+- Chaekgalpi Tools: [Scan PDF Cleanup](https://github.com/microhan1/scan-pdf-cleanup) · [Scan PDF Split](https://github.com/microhan1/scan-pdf-split) · [Trim PDF](https://github.com/microhan1/TrimPDF) · Ebook Renamer (coming soon)
 - Browser version, no install: [Spread Split](https://microhan1.github.io/spread-split/)
-- [Chaekgalpi Library](https://github.com/microhan1/chaekgalpi)
+- [Chaekgalpi Library](https://chaekgalpi.co.kr/tools/ebookcover?utm_source=github&utm_medium=referral&utm_campaign=tool_cta&utm_content=ebookcover) — a web service for keeping track of the books you read and your reading notes.
 
 ## License
 
 MIT. See [LICENSE](LICENSE). Fonts are OFL (`fonts/`).
+
+Third-party licenses are in [THIRD_PARTY_LICENSES.txt](THIRD_PARTY_LICENSES.txt).

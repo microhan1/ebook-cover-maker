@@ -1,5 +1,10 @@
 {
   "app_title": "전자책 표지 만들기",
+  "app_tagline": "제목·저자·출판사명만 넣으면 유페이퍼 검수 규격에 맞는 표지가 만들어집니다",
+  "step_input": "① 입력",
+  "step_design": "② 디자인",
+  "step_preview": "③ 미리보기",
+  "step_epub": "④ EPUB에 넣기 (선택)",
   "lbl_language": "언어",
   "drop_hint": "배경 이미지(JPG·PNG)나 EPUB 파일을 이 창에 끌어다 놓아도 됩니다.",
   "field_title": "제목",

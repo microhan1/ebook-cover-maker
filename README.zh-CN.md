@@ -4,6 +4,8 @@
 
 只需输入书名、作者、出版社名，即可生成符合自出版平台审核规格（宽 600~1000px，底部出版社名，upaper.net 要求）的电子书封面图片。这不是设计工具，而是为了通过审核的封面生成器。无服务器，无需安装，绝不修改原 EPUB 和背景图片。
 
+![电子书封面制作窗口：输入、设计、预览、放入EPUB](docs/app.png)
+
 ![四种模板](docs/templates.png)
 
 ## 下载
@@ -53,10 +55,12 @@ python main.py --title "书名" --author "作者" --publisher "出版社" --bg p
 
 ## 系列
 
-- 书签工具：[扫描PDF清晰化](https://github.com/microhan1/scan-pdf-cleanup) · [双页拆分](https://github.com/microhan1/scan-pdf-split) · [裁边](https://github.com/microhan1/scan-pdf-crop) · [电子书文件名整理](https://github.com/microhan1/ebook-renamer)
+- 书签工具：[扫描PDF清晰化](https://github.com/microhan1/scan-pdf-cleanup) · [双页拆分](https://github.com/microhan1/scan-pdf-split) · [裁边](https://github.com/microhan1/TrimPDF) · 电子书文件名整理（即将公开）
 - 无需安装的网页版：[跨页拆分](https://microhan1.github.io/spread-split/)
-- [书签库](https://github.com/microhan1/chaekgalpi)
+- [书签库](https://chaekgalpi.co.kr/tools/ebookcover?utm_source=github&utm_medium=referral&utm_campaign=tool_cta&utm_content=ebookcover) — 记录读过的书和读书笔记的网络服务。
 
 ## 许可证
 
 MIT，见 [LICENSE](LICENSE)。字体为 OFL（`fonts/`）。
+
+第三方许可证见 [THIRD_PARTY_LICENSES.txt](THIRD_PARTY_LICENSES.txt)。

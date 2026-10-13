@@ -1,5 +1,10 @@
 {
   "app_title": "电子书封面制作",
+  "app_tagline": "只需填写书名、作者和出版社名，即可生成符合审核规格的封面",
+  "step_input": "① 输入",
+  "step_design": "② 设计",
+  "step_preview": "③ 预览",
+  "step_epub": "④ 放入EPUB（可选）",
   "lbl_language": "语言",
   "drop_hint": "也可以将背景图片（JPG/PNG）或EPUB文件拖放到此窗口。",
   "field_title": "书名",
