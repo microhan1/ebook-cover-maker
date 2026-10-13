@@ -47,10 +47,10 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="ebook-cover-maker", description=t("cli_desc"))
     p.add_argument("inputs", nargs="*", help=t("cli_inputs"))
     # --- TOOL OPTIONS ---------------------------------------------------
-    p.add_argument("--title", default="", help=t("cli_title"))
+    p.add_argument("--title", default=None, help=t("cli_title"))
     p.add_argument("--subtitle", default="", help=t("cli_subtitle"))
-    p.add_argument("--author", default="", help=t("cli_author"))
-    p.add_argument("--publisher", default="", help=t("cli_publisher"))
+    p.add_argument("--author", default=None, help=t("cli_author"))
+    p.add_argument("--publisher", default=None, help=t("cli_publisher"))
     p.add_argument("--series", default="", help=t("cli_series"))
     p.add_argument("--volume", default="", help=t("cli_volume"))
     p.add_argument("--preset", choices=presets.PRESET_KEYS, default=presets.DEFAULT_PRESET, help=t("cli_preset"))
@@ -79,7 +79,7 @@ def options_from_args(args: argparse.Namespace) -> render.Options:
     if fmt is None:
         fmt = "png" if args.output.lower().endswith(".png") else "jpg"
     return render.Options(
-        title=args.title, subtitle=args.subtitle, author=args.author, publisher=args.publisher,
+        title=args.title or "", subtitle=args.subtitle, author=args.author or "", publisher=args.publisher or "",
         series=args.series, volume=args.volume, preset=args.preset, width=args.width, height=args.height,
         template=args.template, color=args.color, bg_color=args.bg_color, fg_color=args.fg_color,
         bg_image=args.bg, font=args.font, fmt=fmt,
@@ -93,13 +93,20 @@ def print_warnings(warnings: list[tuple[str, dict]]) -> None:
 
 def run_cli(args: argparse.Namespace) -> int:
     missing = [name for name, val in (("title", args.title), ("author", args.author),
-                                      ("publisher", args.publisher)) if not val.strip()]
+                                      ("publisher", args.publisher)) if not (val or "").strip()]
     if missing:
         print(t("cli_missing_required", names=", ".join("--" + m for m in missing)), file=sys.stderr)
-        if not args.publisher.strip():
+        if not (args.publisher or "").strip():
             print(t("warn_publisher_empty"), file=sys.stderr)
         return 2
+    for flag, value in (("--bg-color", args.bg_color), ("--fg-color", args.fg_color)):
+        if value.strip() and not render.parse_color(value):
+            print(t("err_bad_color", flag=flag, value=value), file=sys.stderr)
+            return 2
     opts = options_from_args(args)
+    output = args.output
+    if output.endswith(("/", "\\")) or os.path.isdir(output):         # a folder: put cover.jpg inside it
+        output = os.path.join(output, "cover.png" if opts.fmt == "png" else "cover.jpg")
     if opts.bg_image and not os.path.isfile(opts.bg_image):
         print(t("err_bg_open_failed", name=opts.bg_image), file=sys.stderr)
         return 1
@@ -115,7 +122,7 @@ def run_cli(args: argparse.Namespace) -> int:
     if not render.publisher_in_zone(result):
         return 1
     try:
-        path = render.save_cover(result.image, args.output, opts.fmt)
+        path = render.save_cover(result.image, output, opts.fmt)
     except OSError as exc:
         print(t("err_save_failed", error=exc), file=sys.stderr)
         return 1
@@ -164,7 +171,9 @@ def main(argv: list[str] | None = None) -> int:
     # A windowed exe has no console, so files dropped on it open the GUI with
     # those files loaded instead of running the CLI into nowhere.
     headless = getattr(sys, "frozen", False) and sys.stdout is None
-    cli_fields = any((args.title, args.author, args.publisher))
+    # giving any of the three flags, even with an empty value, means "run as a command" (a script
+    # with an unset variable must get an error, not a window that waits forever)
+    cli_fields = any(v is not None for v in (args.title, args.author, args.publisher))
     if args.gui or headless or not cli_fields:
         import gui
 

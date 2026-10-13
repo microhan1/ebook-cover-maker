@@ -100,7 +100,7 @@ class App:
             var.trace_add("write", lambda *_: self._on_change())
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self._update_gate()
-        self.root.after(50, self._refresh_preview)
+        self._preview_job = self.root.after(50, self._refresh_preview)
 
     # ------------------------------------------------------------ building
     def _reg(self, widget: tk.Misc, key: str, attr: str = "text") -> tk.Misc:
@@ -451,7 +451,7 @@ class App:
         scale = min(w / img.width, h / img.height, 1.0)
         size = (max(1, int(img.width * scale)), max(1, int(img.height * scale)))
         thumb = img.resize(size, Image.Resampling.LANCZOS)
-        self._photo = ImageTk.PhotoImage(thumb)
+        self._photo = ImageTk.PhotoImage(thumb, master=self.root)      # belongs to this window, not the default root
         self.lbl_preview.configure(image=self._photo)
 
     # ------------------------------------------------------------ save
@@ -490,6 +490,7 @@ class App:
             messagebox.showerror(t("dlg_error"), t("err_save_failed", error=exc), parent=self.root)
             return
         self._result_path = final
+        self._remember_dir(final)                       # the folder exists now, even if it was new
         self._save_settings()
         self.log("msg_saved", path=final)
         self._set_status("msg_saved", path=final)
@@ -557,6 +558,9 @@ class App:
     def _on_close(self) -> None:
         self._closing = True
         self.preview_gen += 1
+        if self._preview_job:                           # a pending preview must not fire into a closed window
+            self.root.after_cancel(self._preview_job)
+            self._preview_job = None
         self._save_settings()
         self._finish_close()
 

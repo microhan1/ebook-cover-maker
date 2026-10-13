@@ -23,7 +23,7 @@ COLOR_SCHEMES: list[tuple[str, str, str]] = [
     ("#0f2b46", "#ffffff", "#e0a458"),   # 3 navy / white / amber
     ("#2f4f3e", "#f1f4ec", "#d4c48f"),   # 4 forest / mist / straw
     ("#7a1f2b", "#fbeee6", "#f2c14e"),   # 5 wine / cream / yellow
-    ("#e9e4d8", "#3b2f2f", "#8c6f4e"),   # 6 sand / cocoa / walnut
+    ("#e9e4d8", "#3b2f2f", "#6b4f33"),   # 6 sand / cocoa / walnut
     ("#ffffff", "#111111", "#1a73e8"),   # 7 white / black / blue
     ("#000000", "#ffffff", "#ff5a5f"),   # 8 black / white / coral
 ]

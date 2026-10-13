@@ -1,0 +1,751 @@
+"""The real Tk window, driven from Python (never by fake mouse events).
+
+Dialogs are replaced by stubs so nothing waits for a person. The settings
+file is redirected to a temp folder by helpers.py. Every Tk or thread
+exception raised during a test fails that test.
+"""
+from __future__ import annotations
+
+import json
+import os
+import tempfile
+import threading
+import time
+import tkinter as tk
+import tkinter.font as tkfont
+import subprocess
+import sys
+import unittest
+from unittest import mock
+
+import helpers  # noqa: F401  (must come first)
+from gui_support import alive, pump, put, sleep_pump
+import epub_insert
+import fixtures as fx
+import i18n
+import presets
+import render
+from helpers import make_photo, sha
+from PIL import Image
+
+try:
+    import gui
+except Exception as exc:  # pragma: no cover
+    raise unittest.SkipTest(f"gui cannot be imported: {exc}")
+
+LANGS = i18n.LANGS
+
+
+def lang_text(lang: str, key: str, **kw) -> str:
+    with open(os.path.join(helpers.ROOT, "lang", f"{lang}.json"), encoding="utf-8") as f:
+        return json.load(f)[key].format(**kw)
+
+
+class FakeEvent:
+    def __init__(self, data):
+        self.data = data
+
+
+ERRORS: list = []
+PREVIEW_DONE = [0]
+APP: "gui.App | None" = None
+_ORIG_HOOK = threading.excepthook
+
+
+def setUpModule():
+    """One window for every test in this module: Tk is only reliable with one
+    window per process. Scenarios that need a fresh window run in their own
+    process (see FreshWindow)."""
+    global APP
+    threading.excepthook = lambda args: ERRORS.append(("thread", args.exc_type, args.exc_value))
+    i18n.set_lang("ko", persist=False)
+    GuiCase.reset_settings()
+    try:
+        APP = gui.App()
+    except tk.TclError as exc:
+        raise unittest.SkipTest(f"no display: {exc}")
+    APP.root.report_callback_exception = lambda *a: ERRORS.append(("tk", a[1], a[2]))
+    APP.root.withdraw()
+    original = APP._preview_done
+
+    def counted(gen, result, error):
+        applied = gen == APP.preview_gen and not APP._closing             # a stale render must not count
+        original(gen, result, error)
+        if applied:
+            PREVIEW_DONE[0] += 1
+
+    APP._preview_done = counted
+
+
+def tearDownModule():
+    threading.excepthook = _ORIG_HOOK
+    try:
+        if APP is not None and alive(APP):
+            APP.root.destroy()
+    except tk.TclError:
+        pass
+    GuiCase.reset_settings()
+
+
+class GuiCase(unittest.TestCase):
+    """Shares the module's window; state is reset before every test."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmpdir = tempfile.TemporaryDirectory()
+        cls.tmp = cls.tmpdir.name
+        cls.app = APP
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmpdir.cleanup()
+
+    @staticmethod
+    def reset_settings(content: str | None = None):
+        if os.path.exists(i18n.SETTINGS_PATH):
+            os.remove(i18n.SETTINGS_PATH)
+        if content is not None:
+            put(i18n.SETTINGS_PATH, content)
+
+    def setUp(self):
+        ERRORS.clear()
+        self.dialogs: list[tuple[str, tuple]] = []
+        patches = {
+            "showerror": lambda *a, **k: self.dialogs.append(("error", a[1:])),
+            "showinfo": lambda *a, **k: self.dialogs.append(("info", a[1:])),
+            "showwarning": lambda *a, **k: self.dialogs.append(("warning", a[1:])),
+            "askyesno": lambda *a, **k: (self.dialogs.append(("yesno", a[1:])) or self.answer_yes),
+        }
+        self.answer_yes = True
+        for name, fn in patches.items():
+            p = mock.patch.object(gui.messagebox, name, fn)
+            p.start()
+            self.addCleanup(p.stop)
+        self.save_answer = ""
+        self.save_calls: list[dict] = []
+        self.open_answer = ""
+        p1 = mock.patch.object(gui.filedialog, "asksaveasfilename", self._ask_save)
+        p2 = mock.patch.object(gui.filedialog, "askopenfilename", lambda *a, **k: self.open_answer)
+        p1.start(), p2.start()
+        self.addCleanup(p1.stop)
+        self.addCleanup(p2.stop)
+        self.reset_app()
+
+    def tearDown(self):
+        sleep_pump(self.app, 0.05)
+        self.assertEqual(ERRORS, [], "an exception happened inside Tk or a thread")
+
+    def _ask_save(self, *a, **k):
+        self.save_calls.append(k)
+        return self.save_answer
+
+    def reset_app(self):
+        a = self.app
+        a._running = False
+        a._closing = False
+        i18n.set_lang("ko", persist=False)
+        a.cmb_lang.current(0)
+        a.var_lang.set(i18n.LANG_NAMES["ko"])
+        for var in (a.var_title, a.var_subtitle, a.var_author, a.var_publisher, a.var_series, a.var_volume,
+                    a.var_bg_color, a.var_fg_color, a.var_bg_image, a.var_epub):
+            var.set("")
+        a.var_width.set("800")
+        a.var_height.set("1200")
+        a.var_fmt.set("jpg")
+        a.cmb_preset.current(0)
+        a.cmb_template.current(0)
+        a.cmb_color.current(0)
+        a.cmb_font.current(presets.FONT_KEYS.index(presets.DEFAULT_FONT))
+        a._result_path = None
+        a._on_preset()
+        a._apply_texts()
+        a.txt_log.configure(state="normal")
+        a.txt_log.delete("1.0", "end")
+        a.txt_log.configure(state="disabled")
+        self.settle()
+
+    def settle(self, timeout: float = 4.0):
+        """Wait until the preview for the current options has been shown."""
+        a = self.app
+        marker = PREVIEW_DONE[0]
+        a._schedule_preview()
+        ok = pump(a, lambda: a._preview_job is None and PREVIEW_DONE[0] > marker, timeout)
+        self.assertTrue(ok, "the preview never finished")
+
+    def log_text(self) -> str:
+        return self.app.txt_log.get("1.0", "end")
+
+
+# ---------------------------------------------------------------------------
+class Gate(GuiCase):
+    def test_publisher_gate_in_every_language(self):
+        a = self.app
+        for i, lang in enumerate(LANGS):
+            a.cmb_lang.current(i)
+            a._on_lang()
+            for empty in ("", "   ", "\t", "\u3000"):
+                a.var_publisher.set(empty)
+                a._update_gate()
+                self.assertTrue(a.btn_save.instate(["disabled"]), (lang, repr(empty)))
+                self.assertTrue(a.btn_epub.instate(["disabled"]), (lang, repr(empty)))
+                self.assertEqual(a.lbl_pub_warn.cget("text"), lang_text(lang, "warn_publisher_empty"))
+            a.var_publisher.set("유페이퍼")
+            a._update_gate()
+            self.assertFalse(a.btn_save.instate(["disabled"]), lang)
+            self.assertFalse(a.btn_epub.instate(["disabled"]), lang)
+            self.assertEqual(a.lbl_pub_warn.cget("text"), "")
+
+    def test_save_and_epub_do_nothing_while_the_gate_is_closed(self):
+        a = self.app
+        a.var_publisher.set("")
+        a.var_epub.set(os.path.join(self.tmp, "x.epub"))
+        a._save()
+        a._insert_epub()
+        self.assertEqual((self.save_calls, self.dialogs), ([], []))
+
+    def test_running_locks_everything_and_unlocking_restores_the_gate(self):
+        a = self.app
+        a.var_publisher.set("유페이퍼")
+        a._set_running(True)
+        for w in (a.btn_save, a.btn_epub, a.btn_bg_browse, a.btn_epub_browse, a.btn_bg_clear, a.btn_epub_clear,
+                  a.btn_bg_color, a.btn_fg_color, a.btn_color_reset):
+            self.assertTrue(w.instate(["disabled"]))
+        self.assertEqual(str(a.cmb_lang.cget("state")), "disabled")
+        a._set_running(False)
+        self.assertFalse(a.btn_save.instate(["disabled"]))
+        self.assertEqual(str(a.cmb_lang.cget("state")), "readonly")
+        a.var_publisher.set("")
+        a._set_running(True)
+        a._set_running(False)
+        self.assertTrue(a.btn_save.instate(["disabled"]), "unlocking must not bypass the publisher gate")
+
+
+# ---------------------------------------------------------------------------
+class Languages(GuiCase):
+    def test_selections_survive_every_language_switch(self):
+        a = self.app
+        a.cmb_preset.current(2)
+        a.cmb_template.current(3)
+        a.cmb_color.current(5)
+        a.cmb_font.current(2)
+        a._on_preset()
+        before = a.options()
+        for i, lang in enumerate(list(LANGS) * 2):
+            a.cmb_lang.current(LANGS.index(lang))
+            a._on_lang()
+            a.root.update()
+            after = a.options()
+            self.assertEqual((after.preset, after.template, after.color, after.font),
+                             (before.preset, before.template, before.color, before.font), lang)
+            self.assertEqual(a.cmb_template.get(), lang_text(lang, "template_4"))
+            self.assertEqual(a.cmb_color.get(), lang_text(lang, "color_6"))
+            self.assertEqual(a.cmb_preset.get(), lang_text(lang, "preset_square"))
+            self.assertEqual(a.cmb_font.get(), lang_text(lang, "font_serif"))
+
+    def test_every_registered_text_is_in_the_chosen_language(self):
+        a = self.app
+        for i, lang in enumerate(LANGS):
+            a.cmb_lang.current(i)
+            a._on_lang()
+            self.assertEqual(a.root.title(), lang_text(lang, "app_title"))
+            for widget, key, attr in a._texts:
+                self.assertEqual(str(widget.cget(attr)), lang_text(lang, key), (lang, key))
+            self.assertEqual(i18n.current_lang(), lang)
+
+    def test_warnings_and_status_are_relabelled_on_switch(self):
+        a = self.app
+        a.var_title.set("가" * 300)
+        a.var_subtitle.set("부제 " * 100)
+        self.settle()
+        for i, lang in enumerate(LANGS):
+            a.cmb_lang.current(i)
+            a._on_lang()
+            shown = a.lbl_warn.cget("text")
+            self.assertIn(lang_text(lang, "warn_title_long"), shown, lang)
+            self.assertIn(lang_text(lang, "warn_subtitle_long"), shown, lang)
+        self.assertIn("×", a.lbl_status.cget("text"))
+
+    def test_no_text_is_cut_off_in_any_language_or_window_size(self):
+        a = self.app
+        a.root.deiconify()
+        problems = []
+        for size in ("1120x780", "980x700"):
+            a.root.geometry(size)
+            for i, lang in enumerate(LANGS):
+                a.cmb_lang.current(i)
+                a._on_lang()
+                a.var_publisher.set("")                       # also shows the warning label
+                a.var_title.set("가" * 300)
+                a.root.update()
+                for widget, key, attr in a._texts:
+                    if widget.winfo_width() < widget.winfo_reqwidth() - 1:
+                        problems.append((size, lang, key, widget.winfo_width(), widget.winfo_reqwidth()))
+                for cmb, keys in a._combos:
+                    font = tkfont.Font(font=cmb.cget("font"))
+                    room = cmb.winfo_width() - 28                 # the drop-down arrow and padding
+                    for k in keys:
+                        if font.measure(i18n.t(k)) > room:
+                            problems.append((size, lang, k, "combobox", font.measure(i18n.t(k)), room))
+                for lbl in (a.lbl_pub_warn, a.lbl_warn, a.lbl_drop, a.lbl_status):
+                    right = lbl.winfo_rootx() + lbl.winfo_reqwidth()
+                    if lbl.winfo_reqwidth() > a.root.winfo_width():
+                        problems.append((size, lang, "label wider than the window", str(lbl)))
+                    if lbl.winfo_x() + lbl.winfo_width() > a.root.winfo_width() + 2:
+                        problems.append((size, lang, "label outside the window", str(lbl)))
+        a.root.withdraw()
+        self.assertEqual(problems, [])
+
+    def test_language_choice_is_saved_and_cover_text_is_unaffected(self):
+        a = self.app
+        a.var_title.set("별 星 star")
+        a.var_publisher.set("유페이퍼")
+        self.settle()
+        shots = []
+        for i, lang in enumerate(LANGS):
+            a.cmb_lang.current(i)
+            a._on_lang()
+            shots.append(render.to_bytes(render.render(a.options()).image, "png"))
+        self.assertEqual(len(set(shots)), 1)
+        self.assertEqual(json.load(open(i18n.SETTINGS_PATH, encoding="utf-8"))["lang"], "ja")
+
+
+# ---------------------------------------------------------------------------
+class Options(GuiCase):
+    def test_form_maps_to_options(self):
+        a = self.app
+        a.var_title.set("  제목  ")
+        a.var_subtitle.set("부제")
+        a.var_author.set("저자")
+        a.var_publisher.set("출판사")
+        a.var_series.set("시리즈")
+        a.var_volume.set("2권")
+        a.cmb_preset.current(1)
+        a.cmb_template.current(2)
+        a.cmb_color.current(4)
+        a.cmb_font.current(0)
+        a.var_fmt.set("png")
+        a.var_bg_color.set("#102030")
+        o = a.options()
+        self.assertEqual((o.title, o.subtitle, o.author, o.publisher, o.series, o.volume),
+                         ("제목", "부제", "저자", "출판사", "시리즈", "2권"))
+        self.assertEqual((o.preset, o.width, o.height, o.template, o.color, o.font, o.fmt, o.bg_color),
+                         ("general", 1600, 2400, 3, 5, "sans", "png", "#102030"))
+
+    def test_size_boxes_only_work_for_custom(self):
+        a = self.app
+        self.assertTrue(a.spn_width.instate(["disabled"]))
+        a.cmb_preset.current(3)
+        a._on_preset()
+        self.assertFalse(a.spn_width.instate(["disabled"]))
+        for text, want in (("abc", 800), ("", 800), ("  640 ", 640), ("-5", presets.MIN_SIDE), ("99999", presets.MAX_SIDE),
+                           ("800.5", 800), ("１２００", 1200), ("0x400", 800), ("1e3", 800)):
+            a.var_width.set(text)
+            self.assertEqual(a.options().width, want, repr(text))
+        a.cmb_preset.current(0)
+        a._on_preset()
+        a.var_width.set("999")
+        self.assertEqual(a.options().width, 800, "the boxes must be ignored outside custom")
+
+    def test_color_buttons(self):
+        a = self.app
+        with mock.patch.object(gui.colorchooser, "askcolor", return_value=((1, 2, 3), "#010203")):
+            a.btn_bg_color.invoke()
+        self.assertEqual(a.var_bg_color.get(), "#010203")
+        with mock.patch.object(gui.colorchooser, "askcolor", return_value=(None, None)):
+            a.btn_fg_color.invoke()
+        self.assertEqual(a.var_fg_color.get(), "")                # cancel changes nothing
+        a.var_fg_color.set("#ffffff")
+        a.btn_color_reset.invoke()
+        self.assertEqual((a.var_bg_color.get(), a.var_fg_color.get()), ("", ""))
+
+    def test_custom_colors_reach_the_cover(self):
+        a = self.app
+        a.var_title.set("t")
+        a.var_publisher.set("p")
+        a.var_bg_color.set("#102030")
+        self.settle()
+        self.assertEqual(a._last_result.image.getpixel((2, 2)), (0x10, 0x20, 0x30))
+
+
+# ---------------------------------------------------------------------------
+class Preview(GuiCase):
+    def test_preview_follows_a_change_within_300_ms(self):
+        a = self.app
+        a.var_publisher.set("유페이퍼")
+        a.var_title.set("준비")
+        self.settle()
+        times = []
+        for i in range(16):
+            marker = PREVIEW_DONE[0]
+            t0 = time.perf_counter()
+            if i % 4 == 0:
+                a.cmb_template.current(i // 4 % 4)
+                a._on_change()
+            else:
+                a.var_title.set(f"별을 세는 밤 {i} 우리가 잊어버린 이야기")
+            ok = pump(a, lambda: PREVIEW_DONE[0] > marker and a._preview_job is None, 3)
+            self.assertTrue(ok)
+            times.append(time.perf_counter() - t0)
+        times.sort()
+        median = times[len(times) // 2]
+        self.assertLess(median, 0.30, f"median {median * 1000:.0f} ms, worst {times[-1] * 1000:.0f} ms")
+        self.assertLess(times[-1], 0.60, f"worst {times[-1] * 1000:.0f} ms")
+
+    def test_preview_with_a_large_photo_stays_fast_after_the_first_time(self):
+        a = self.app
+        photo = os.path.join(self.tmp, "big.jpg")
+        Image.effect_noise((6000, 4000), 60).convert("RGB").save(photo, quality=85)
+        a.var_publisher.set("p")
+        a.var_bg_image.set(photo)
+        self.settle(timeout=10)
+        times = []
+        for i in range(6):
+            marker = PREVIEW_DONE[0]
+            t0 = time.perf_counter()
+            a.var_title.set(f"t{i}")
+            pump(a, lambda: PREVIEW_DONE[0] > marker and a._preview_job is None, 3)
+            times.append(time.perf_counter() - t0)
+        self.assertLess(sorted(times)[len(times) // 2], 0.30, [round(t, 2) for t in times])
+
+    def test_a_slow_old_render_never_overwrites_a_newer_one(self):
+        a = self.app
+        a.var_publisher.set("p")
+        real = render.render
+        delays = {"AAA": 0.9, "BBB": 0.0}
+
+        def slow(opts):
+            result = real(opts)
+            time.sleep(delays.get(opts.title, 0))
+            return result
+
+        with mock.patch.object(render, "render", slow):
+            marker = PREVIEW_DONE[0]
+            a.var_title.set("AAA")
+            sleep_pump(a, 0.35)                                   # AAA's render has started and is slow
+            a.var_title.set("BBB")
+            pump(a, lambda: PREVIEW_DONE[0] > marker and a._preview_job is None, 3)
+            sleep_pump(a, 1.2)                                    # long enough for AAA to finish
+        expect = render.to_bytes(real(a.options()).image, "png")
+        self.assertEqual(render.to_bytes(a._last_result.image, "png"), expect, "an outdated render replaced the new one")
+        self.assertEqual(a.options().title, "BBB")
+
+    def test_fast_typing_renders_only_what_is_needed(self):
+        a = self.app
+        a.var_publisher.set("p")
+        calls = []
+        real = render.render
+
+        def counting(opts):
+            calls.append(opts.title)
+            return real(opts)
+
+        with mock.patch.object(render, "render", counting):
+            marker = PREVIEW_DONE[0]
+            for i in range(40):
+                a.var_title.set("글" * (i % 10 + 1))
+                sleep_pump(a, 0.02)
+            pump(a, lambda: PREVIEW_DONE[0] > marker and a._preview_job is None, 3)
+            sleep_pump(a, 0.3)
+        self.assertLessEqual(len(calls), 10, f"{len(calls)} renders for 40 keystrokes")
+        self.assertEqual(calls[-1], "글" * 10)
+
+    def test_broken_background_is_reported_and_recovers(self):
+        a = self.app
+        a.var_publisher.set("p")
+        bad = os.path.join(self.tmp, "junk.png")
+        put(bad, b"not an image")
+        a.var_bg_image.set(bad)
+        self.settle()
+        self.assertIn(lang_text("ko", "err_bg_open_failed", name=bad), a.lbl_warn.cget("text"))
+        a.btn_bg_clear.invoke()
+        self.settle()
+        self.assertEqual(a.lbl_warn.cget("text"), "")
+        self.assertIsNotNone(a._last_result)
+
+    def test_text_that_needs_warnings_shows_them(self):
+        a = self.app
+        a.var_publisher.set("p")
+        a.var_title.set("고양이 \U0001f431")
+        self.settle()
+        self.assertIn("\U0001f431", a.lbl_warn.cget("text"))
+        a.cmb_preset.current(3)
+        a._on_preset()
+        a.var_width.set("4000")
+        a.var_height.set("300")
+        self.settle()
+        self.assertIn(lang_text("ko", "warn_publisher_small", size=int(a._last_result.publisher_box[3] - a._last_result.publisher_box[1])).split("(")[0],
+                      a.lbl_warn.cget("text"))
+
+# ---------------------------------------------------------------------------
+class SaveFlow(GuiCase):
+    def prepare(self):
+        a = self.app
+        a.var_title.set("별을 세는 밤")
+        a.var_author.set("저자")
+        a.var_publisher.set("유페이퍼")
+        self.settle()
+
+    def test_save_jpg(self):
+        a = self.app
+        self.prepare()
+        target = os.path.join(self.tmp, "out", "내 표지.jpg")
+        self.save_answer = target
+        a._save()
+        self.assertTrue(os.path.isfile(target))
+        with Image.open(target) as im:
+            self.assertEqual((im.format, im.size), ("JPEG", (800, 1200)))
+        self.assertEqual(a._result_path, target)
+        self.assertFalse(a.btn_open.instate(["disabled"]))
+        self.assertIn(lang_text("ko", "msg_saved", path=target), self.log_text())
+        self.assertEqual(self.save_calls[0]["initialfile"], "cover.jpg")
+        self.assertEqual(json.load(open(i18n.SETTINGS_PATH, encoding="utf-8"))["last_dir"], os.path.dirname(target))
+
+    def test_save_png_defaults_and_numbering(self):
+        a = self.app
+        self.prepare()
+        a.var_fmt.set("png")
+        target = os.path.join(self.tmp, "same")
+        self.save_answer = target
+        a._save()
+        a._save()
+        self.assertEqual(self.save_calls[0]["initialfile"], "cover.png")
+        self.assertTrue(os.path.isfile(target + ".png"))
+        self.assertTrue(os.path.isfile(target + "(2).png"))
+
+    def test_cancelled_dialog_creates_nothing(self):
+        a = self.app
+        self.prepare()
+        self.save_answer = ""
+        a._save()
+        self.assertIsNone(a._result_path)
+        self.assertEqual(self.dialogs, [])
+
+    def test_unwritable_target_shows_an_error_and_keeps_going(self):
+        a = self.app
+        self.prepare()
+        blocker = os.path.join(self.tmp, "blocker")
+        put(blocker, "x")
+        self.save_answer = os.path.join(blocker, "sub", "c.jpg")
+        a._save()
+        self.assertEqual([d[0] for d in self.dialogs], ["error"])
+        self.assertIn("Save failed".split()[0] if False else lang_text("ko", "err_save_failed", error="").split(":")[0], self.dialogs[0][1][0])
+        self.assertIsNone(a._result_path)
+        self.assertFalse(a.btn_save.instate(["disabled"]))
+
+    def test_save_blocked_when_the_publisher_is_outside_the_zone(self):
+        a = self.app
+        self.prepare()
+        self.save_answer = os.path.join(self.tmp, "blocked.jpg")
+        with mock.patch.object(render, "publisher_in_zone", return_value=False):
+            a._save()
+        self.assertFalse(os.path.exists(self.save_answer), "a cover whose publisher is outside the zone was saved")
+        self.assertEqual([d[0] for d in self.dialogs], ["error"])
+        self.assertIn(lang_text("ko", "warn_publisher_zone"), self.dialogs[0][1][0])
+
+    def test_tiny_publisher_is_a_warning_not_a_block(self):
+        a = self.app
+        self.prepare()
+        a.cmb_preset.current(3)
+        a._on_preset()
+        a.var_width.set("300")
+        a.var_height.set("300")
+        self.settle()
+        self.assertIn(lang_text("ko", "warn_publisher_small", size=0).split("(")[0], a.lbl_warn.cget("text"))
+        self.save_answer = os.path.join(self.tmp, "small.jpg")
+        a._save()
+        self.assertTrue(os.path.isfile(self.save_answer))
+
+    def test_open_result_uses_explorer(self):
+        a = self.app
+        self.prepare()
+        target = os.path.join(self.tmp, "o.jpg")
+        self.save_answer = target
+        a._save()
+        with mock.patch.object(gui.subprocess, "Popen") as popen:
+            a.btn_open.invoke()
+        self.assertEqual(popen.call_args[0][0][:2], ["explorer", "/select,"])
+        self.assertEqual(popen.call_args[0][0][2], os.path.normpath(target))
+
+
+# ---------------------------------------------------------------------------
+class EpubFlow(GuiCase):
+    def make(self, name, builder):
+        p = os.path.join(self.tmp, name)
+        builder(p)
+        return p
+
+    def ready(self, epub):
+        a = self.app
+        a.var_title.set("표지 제목")
+        a.var_publisher.set("유페이퍼")
+        a.var_epub.set(epub)
+        self.settle()
+
+    def wait_idle(self):
+        self.assertTrue(pump(self.app, lambda: not self.app._running, 15))
+
+    def test_insert_into_epub_with_cover_asks_then_creates(self):
+        src = self.make("a.epub", fx.epub2_with_cover)
+        before = sha(src)
+        self.ready(src)
+        self.app._insert_epub()
+        self.wait_idle()
+        out = os.path.join(self.tmp, "a_cover.epub")
+        self.assertTrue(os.path.isfile(out))
+        self.assertEqual(sha(src), before)
+        kinds = [d[0] for d in self.dialogs]
+        self.assertEqual(kinds, ["yesno", "info"])
+        self.assertIn(lang_text("ko", "warn_epub_replace"), self.dialogs[0][1][0])
+        self.assertEqual(self.app._result_path, out)
+        self.assertFalse(self.app.btn_save.instate(["disabled"]))
+
+    def test_declining_the_replace_question_does_nothing(self):
+        src = self.make("b.epub", fx.epub2_with_cover)
+        self.ready(src)
+        self.answer_yes = False
+        self.app._insert_epub()
+        self.assertFalse(self.app._running)
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, "b_cover.epub")))
+
+    def test_epub_without_cover_needs_no_question(self):
+        src = self.make("c.epub", fx.epub3_no_cover)
+        self.ready(src)
+        self.app._insert_epub()
+        self.wait_idle()
+        self.assertEqual([d[0] for d in self.dialogs], ["info"])
+        self.assertTrue(os.path.isfile(os.path.join(self.tmp, "c_cover.epub")))
+
+    def test_drm_and_non_epub_and_corrupt_files(self):
+        drm = self.make("d.epub", fx.epub2_drm)
+        junk = os.path.join(self.tmp, "j.epub")
+        put(junk, b"junk")
+        for path, key, kw in ((drm, "err_epub_drm", {"name": "d.epub"}), (junk, "err_epub_open_failed", {"name": "j.epub"})):
+            self.dialogs.clear()
+            self.ready(path)
+            self.app._insert_epub()
+            self.assertEqual([d[0] for d in self.dialogs], ["error"], path)
+            self.assertIn(lang_text("ko", key, **kw), self.dialogs[0][1][0])
+            self.assertFalse(self.app._running)
+
+    def test_failure_inside_the_worker_restores_the_window(self):
+        src = self.make("e.epub", fx.epub2_no_cover)
+        self.ready(src)
+        with mock.patch.object(epub_insert, "insert_cover", side_effect=epub_insert.EpubError("boom")):
+            self.app._insert_epub()
+            self.wait_idle()
+        self.assertEqual([d[0] for d in self.dialogs], ["error"])
+        self.assertIn("boom", self.dialogs[0][1][0])
+        self.assertFalse(self.app.btn_save.instate(["disabled"]))
+        self.assertEqual(str(self.app.cmb_lang.cget("state")), "readonly")
+
+    def test_no_epub_chosen_opens_the_browser_and_cancel_stops(self):
+        a = self.app
+        a.var_publisher.set("p")
+        a.var_epub.set("")
+        self.open_answer = ""
+        a._insert_epub()
+        self.assertEqual(self.dialogs, [])
+        self.assertFalse(a._running)
+
+    def test_duplicate_cover_pages_are_reported_in_the_log(self):
+        src = self.make("f.epub", fx.epub2_png_cover_after_ch1)
+        self.ready(src)
+        self.app._insert_epub()
+        self.wait_idle()
+        self.assertIn("about.xhtml", self.log_text())
+
+# ---------------------------------------------------------------------------
+class Drops(GuiCase):
+    def test_drop_formats(self):
+        a = self.app
+        d = os.path.join(self.tmp, "폴더 with space")
+        os.makedirs(d)
+        img = os.path.join(d, "사진 1.PNG")
+        Image.new("RGB", (50, 50)).save(img)
+        epub = os.path.join(d, "책 (final).EPUB")
+        fx.epub2_no_cover(epub)
+        a._on_drop(FakeEvent("{%s} {%s}" % (img.replace("\\", "/"), epub.replace("\\", "/"))))
+        self.assertEqual(os.path.normpath(a.var_bg_image.get()), img)
+        self.assertEqual(os.path.normpath(a.var_epub.get()), epub)
+
+    def test_drop_rejects_what_it_cannot_use(self):
+        a = self.app
+        text = os.path.join(self.tmp, "a.txt")
+        put(text, "x")
+        a._on_drop(FakeEvent("{%s} {%s} {%s}" % (text.replace("\\", "/"), self.tmp.replace("\\", "/"),
+                                                   (self.tmp + "/missing.png").replace("\\", "/"))))
+        self.assertEqual((a.var_bg_image.get(), a.var_epub.get()), ("", ""))
+        self.assertEqual(self.log_text().count(lang_text("ko", "err_open_failed", name="").split(":")[0]), 3)
+
+    def test_drops_are_ignored_while_working(self):
+        a = self.app
+        img = os.path.join(self.tmp, "i.png")
+        Image.new("RGB", (50, 50)).save(img)
+        a._set_running(True)
+        a._on_drop(FakeEvent("{%s}" % img.replace("\\", "/")))
+        a._set_running(False)
+        self.assertEqual(a.var_bg_image.get(), "")
+
+    def test_browse_buttons(self):
+        a = self.app
+        img = os.path.join(self.tmp, "b.png")
+        Image.new("RGB", (50, 50)).save(img)
+        self.open_answer = img
+        a.btn_bg_browse.invoke()
+        self.assertEqual(a.var_bg_image.get(), img)
+        self.open_answer = ""
+        a.btn_bg_browse.invoke()
+        self.assertEqual(a.var_bg_image.get(), img)               # cancel keeps the old choice
+        a.btn_bg_clear.invoke()
+        self.assertEqual(a.var_bg_image.get(), "")
+
+
+# ---------------------------------------------------------------------------
+class FreshWindow(unittest.TestCase):
+    """Tk is only reliable with one window per process, so every scenario that
+    needs a brand-new window runs in its own process (gui_scenarios.py)."""
+
+    def scenario(self, name: str, **kwargs):
+        script = os.path.join(helpers.TESTS, "gui_scenarios.py")
+        env = dict(os.environ, PYTHONIOENCODING="utf-8")
+        r = subprocess.run([sys.executable, script, name, json.dumps(kwargs)], capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", timeout=120, env=env)
+        out = (r.stdout + r.stderr)
+        if "no display" in out or "TclError: no display" in out:
+            self.skipTest("no display")
+        self.assertEqual(r.returncode, 0, out[-1500:])
+        self.assertIn("OK", r.stdout)
+
+    def test_garbage_settings_never_stop_the_window_from_opening(self):
+        contents = [
+            "{not json", "[]", "null", '"text"', "",
+            '{"options": "x"}', '{"options": []}',
+            '{"options": {"template": "x", "width": "big", "color": 99, "preset": [], "font": 7, "fmt": {}, "bg_color": 5}}',
+            '{"options": {"template": 9, "width": -1, "height": 99999999, "color": -3, "preset": "nope"}}',
+            '{"options": {"publisher": 123, "author": null, "series": ["x"]}}',
+            '{"options": {"template": true, "color": false, "width": 800.5}}',
+            '{"last_dir": 5}', '{"last_dir": "Z:\\\\does\\\\not\\\\exist"}', '{"lang": 5, "options": {"fmt": "gif"}}',
+            "\x00\x01\x02", '{"options": {"preset": "custom", "width": 10, "height": 20}}',
+        ]
+        for content in contents:
+            with self.subTest(content=content[:40]):
+                self.scenario("settings_variant", content=content)
+
+    def test_saved_choices_come_back(self):
+        self.scenario("saved_choices")
+
+    def test_saved_custom_size_enables_the_size_boxes(self):
+        self.scenario("saved_custom_size")
+
+    def test_closing_writes_settings_but_never_book_text(self):
+        self.scenario("closing_writes_settings")
+
+    def test_closing_while_a_render_is_running_is_clean(self):
+        self.scenario("close_during_render")
+
+    def test_closing_during_an_insert_lets_it_finish(self):
+        self.scenario("close_during_insert")
+
+
+if __name__ == "__main__":
+    unittest.main()

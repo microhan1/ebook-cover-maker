@@ -7,8 +7,14 @@ overwriting an existing file.
 from __future__ import annotations
 
 import io
+import math
 import os
 import re
+import tempfile
+import threading
+import time
+import unicodedata
+from collections import OrderedDict
 from dataclasses import dataclass, field
 
 from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
@@ -21,6 +27,10 @@ FONT_DIR = os.path.join(resource_dir(), "fonts")
 LINE_SPACING = 1.25            # line height as a multiple of the font size
 SHRINK_STEP = 0.92             # auto-size shrinks by this factor per attempt
 DARKEN = 0.45                  # how much a background photo is darkened (0..1)
+BG_LUM_MAX = 0.11              # after darkening, 90% of the photo has at most this relative luminance (0..1)
+MIN_PUBLISHER_PX = 14          # a publisher name smaller than this is reported
+BG_CACHE_SIZE = 3
+MAX_TEXT = 1000              # characters kept per text field (a book title is never longer)
 HEX_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
 
 # One token per CJK/Hangul/kana character, whitespace runs, or other runs.
@@ -68,11 +78,12 @@ class Options:
     fmt: str = presets.DEFAULT_FORMAT
 
     def validated(self) -> "Options":
-        def s(v) -> str:
+        s = clean_text
+
+        def path_s(v) -> str:
             return v.strip() if isinstance(v, str) else ""
 
-        def hexcolor(v) -> str:
-            return v.strip().lower() if isinstance(v, str) and HEX_RE.match(v.strip()) else ""
+        hexcolor = parse_color
 
         preset = self.preset if self.preset in presets.SIZE_PRESETS else presets.DEFAULT_PRESET
         size = presets.SIZE_PRESETS[preset]
@@ -93,7 +104,7 @@ class Options:
             publisher=s(self.publisher), series=s(self.series), volume=s(self.volume),
             preset=preset, width=width, height=height, template=template, color=color,
             bg_color=hexcolor(self.bg_color), fg_color=hexcolor(self.fg_color),
-            bg_image=s(self.bg_image),
+            bg_image=path_s(self.bg_image),
             font=self.font if self.font in presets.FONT_FILES else presets.DEFAULT_FONT,
             fmt=self.fmt if self.fmt in presets.FORMATS else presets.DEFAULT_FORMAT,
         )
@@ -101,6 +112,47 @@ class Options:
     def colors(self) -> tuple[str, str, str]:
         bg, fg, accent = presets.COLOR_SCHEMES[self.color - 1]
         return (self.bg_color or bg, self.fg_color or fg, accent)
+
+
+def parse_color(value) -> str:
+    """'#rrggbb', 'rrggbb' or '#rgb' -> '#rrggbb'; "" for anything that is not a color."""
+    if not isinstance(value, str):
+        return ""
+    v = value.strip()
+    v = v[1:] if v.startswith("#") else v
+    if len(v) == 3:
+        v = "".join(c * 2 for c in v)
+    if len(v) == 6 and all(c in "0123456789abcdefABCDEF" for c in v):
+        return "#" + v.lower()
+    return ""
+
+
+def clean_text(value) -> str:
+    """Make typed or pasted text safe to draw.
+
+    * composes decomposed Hangul and kana (text from macOS arrives as NFD and
+      would otherwise draw as loose jamo)
+    * drops control and invisible formatting characters (they draw as boxes)
+    * turns tabs, no-break and ideographic spaces into plain spaces
+    * keeps at most MAX_TEXT characters
+    """
+    if not isinstance(value, str):
+        return ""
+    out: list[str] = []
+    for ch in unicodedata.normalize("NFC", value):
+        if ch == "\n":
+            out.append(ch)
+            continue
+        cat = unicodedata.category(ch)
+        if cat in ("Zl", "Zp"):
+            out.append("\n")
+        elif cat == "Zs" or ch in "\t\v\f\x85":
+            out.append(" ")
+        elif cat in ("Cc", "Cf", "Cs"):
+            continue
+        else:
+            out.append(ch)
+    return "".join(out).strip()[:MAX_TEXT]
 
 
 def _clamp_int(value, lo: int, hi: int, default: int) -> int:
@@ -231,7 +283,7 @@ class Text:
         for r, k in runs:
             f = load_font(k, self.index, self.size)
             if shadow:
-                off = max(1, self.size // 28)
+                off = max(1, self.size // 40)
                 draw.text((x + off, base + off), r, font=f, fill=shadow, anchor="ls")
             draw.text((x, base), r, font=f, fill=fill, anchor="ls")
             x += f.getlength(r)
@@ -323,8 +375,27 @@ class Canvas:
         self.warnings: list[tuple[str, dict]] = []
         self.publisher_box: tuple[int, int, int, int] | None = None
         self.title_size = 0
+        self.last_size = 0                     # font size of the last block drawn
         self.draw = ImageDraw.Draw(image)
         self._missing: list[str] = []
+        # Text drawn straight onto a darkened photo must be light, whatever
+        # the scheme's own text color is (a dark-text scheme is made for a
+        # light solid background). A color the user picked is always honored.
+        if opts.fg_color:
+            self.photo_fg = opts.fg_color
+        else:
+            lighter = max((self.bg, self.fg), key=_luminance)
+            self.photo_fg = lighter if _luminance(lighter) >= 0.6 else "#ffffff"
+
+    @property
+    def text_fg(self) -> str:
+        """Color for text that sits directly on the background (photo or solid)."""
+        return self.photo_fg if self.has_image else self.fg
+
+    @property
+    def series_fg(self) -> str:
+        """The series line: accent on a solid color, light text on a photo."""
+        return self.photo_fg if self.has_image else self.accent
 
     # sizes as fractions of the width keep every preset looking the same
     def px(self, frac: float) -> int:
@@ -355,8 +426,13 @@ class Canvas:
     def block(self, text: str, key: str, box: tuple[int, int, int, int], start: int,
               min_size: int, max_lines: int, color: str, align: str = "center",
               valign: str = "top", is_title: bool = False,
-              shadow: bool = True) -> tuple[int, int, int, int] | None:
-        """Wrap and auto-size ``text`` into ``box``. Returns the drawn bbox."""
+              shadow: bool = True, cut_warning: str | None = None) -> tuple[int, int, int, int] | None:
+        """Wrap and auto-size ``text`` into ``box``. Returns the drawn bbox.
+
+        A title that does not fit even at the smallest size is drawn anyway
+        and reported (``warn_title_long``). Other fields that do not fit are
+        cut with an ellipsis and reported with ``cut_warning``, so they can
+        never run into the neighbouring text."""
         if not text:
             return None
         x0, y0, x1, y1 = box
@@ -366,8 +442,13 @@ class Canvas:
             self.title_size = tx.size
             if too_small:
                 self.warnings.append(("warn_title_long", {}))
+        elif too_small and cut_warning:
+            keep = max(1, min(max_lines, int((y1 - y0) // tx.line_height)))
+            lines = _ellipsize(lines, keep, tx, x1 - x0)
+            self.warnings.append((cut_warning, {}))
         _, missing = split_runs(text, key, index)
         self._note_missing(missing)
+        self.last_size = tx.size
         total_h = len(lines) * tx.line_height
         if valign == "middle":
             y = y0 + max(0, (y1 - y0 - total_h) // 2)
@@ -407,10 +488,14 @@ class Canvas:
         size = max(int(start), int(min_size))
         while True:
             tx = Text(key, index, size)
-            cols, cell = _vertical_layout(text, tx, max_h)
-            if len(cols) <= max_cols or size <= min_size:
+            cols, cell, overflow = _vertical_layout(text, tx, max_h)
+            if (len(cols) <= max_cols and not overflow) or size <= min_size:
                 break
             size = max(int(min_size), int(size * SHRINK_STEP))
+        if overflow:
+            # one unbroken word still taller than the box at the smallest
+            # size: break it between characters so nothing leaves the cover
+            cols, cell, overflow = _vertical_layout(text, tx, max_h, split=True)
         if is_title:
             self.title_size = size
             if len(cols) > max_cols:
@@ -452,6 +537,8 @@ class Canvas:
         bbox = self.block(name, "sans", box, self.py(0.03), self.py(0.012), 1, color,
                           align="center", valign="middle", shadow=shadow)
         self.publisher_box = bbox
+        if self.last_size < MIN_PUBLISHER_PX:
+            self.warnings.append(("warn_publisher_small", {"size": self.last_size}))
 
     def publisher_check(self) -> None:
         """Never trust the layout: verify the drawn publisher sits in the zone."""
@@ -467,29 +554,66 @@ class Canvas:
             self.warnings.append(("warn_font_missing", {"chars": "".join(self._missing)}))
 
 
-def _vertical_layout(text: str, tx: Text, max_h: int) -> tuple[list[list[tuple[str, int]]], int]:
+def _ellipsize(lines: list[str], keep: int, tx: Text, max_w: float) -> list[str]:
+    """Keep the first ``keep`` lines; the last one ends with an ellipsis."""
+    if len(lines) <= keep and all(tx.width(ln) <= max_w for ln in lines):
+        return lines
+    out = lines[:keep]
+    last = out[-1] if out else ""
+    if len(lines) > keep:
+        last = last.rstrip() + "\u2026"
+    while len(last) > 1 and tx.width(last) > max_w:
+        last = last[:-2].rstrip() + "\u2026"
+    out[-1] = last
+    return out
+
+
+def _vertical_layout(text: str, tx: Text, max_h: int,
+                     split: bool = False) -> tuple[list[list[tuple[str, int]]], int, bool]:
     """Split text into columns of (item, length). CJK characters take one
-    cell each; a Latin run takes its rotated width."""
+    cell each; a Latin run takes its rotated width. Returns the columns, the
+    cell size, and whether some item is taller than ``max_h`` (``split=True``
+    breaks such items between characters so that never happens)."""
     cell = int(tx.size * 1.12)
+
+    def length_of(tok: str) -> int:
+        # must match how Canvas.vertical draws: CJK characters and single
+        # characters stand upright in one cell; longer Latin runs are rotated
+        if _CJK_CHAR_RE.match(tok) or len(tok) == 1:
+            return cell
+        return int(tx.width(tok)) + cell // 4
+
     items: list[tuple[str, int]] = []
     for tok in TOKEN_RE.findall(text.replace("\n", " ")):
         if tok.isspace():
             items.append((" ", cell // 2))
-        elif _CJK_CHAR_RE.match(tok):
-            items.append((tok, cell))
         else:
-            items.append((tok, int(tx.width(tok)) + cell // 4))
+            length = length_of(tok)
+            if split and length > max_h and len(tok) > 1:
+                piece = ""
+                for ch in tok:
+                    if piece and length_of(piece + ch) > max_h:
+                        items.append((piece, length_of(piece)))
+                        piece = ""
+                    piece += ch
+                if piece:
+                    items.append((piece, length_of(piece)))
+            else:
+                items.append((tok, length))
     cols: list[list[tuple[str, int]]] = [[]]
     used = 0
+    overflow = False
     for item, length in items:
         if used + length > max_h and cols[-1]:
             cols.append([])
             used = 0
             if item == " ":
                 continue
+        if length > max_h:
+            overflow = True
         cols[-1].append((item, length))
         used += length
-    return cols, cell
+    return cols, cell, overflow
 
 
 def _luminance(hexcolor: str) -> float:
@@ -502,24 +626,100 @@ def _rgba(hexcolor: str, alpha: int) -> tuple[int, int, int, int]:
 
 
 # ---------------------------------------------------------------- background
+_bg_cache: "OrderedDict[tuple, tuple[Image.Image, list]]" = OrderedDict()
+_bg_lock = threading.Lock()
+
+
 def load_background(path: str, w: int, h: int) -> tuple[Image.Image, list[tuple[str, dict]]]:
     """Crop the user's photo to the cover size (centered) and darken it so
-    text stays readable. Upscaled photos are blurred and reported."""
+    light text stays readable. Upscaled photos are blurred and reported.
+
+    The result is cached per file (path, mtime, size) and cover size, so the
+    live preview does not decode a 20 MB photo on every keystroke. Callers
+    must not modify the returned image."""
+    try:
+        st = os.stat(path)
+    except OSError as exc:
+        raise BackgroundOpenError(path) from exc
+    key = (os.path.abspath(path), st.st_mtime_ns, st.st_size, w, h)
+    with _bg_lock:
+        hit = _bg_cache.get(key)
+        if hit is not None:
+            _bg_cache.move_to_end(key)
+            return hit[0], list(hit[1])
+    img, warnings = _build_background(path, w, h)
+    with _bg_lock:
+        _bg_cache[key] = (img, list(warnings))
+        while len(_bg_cache) > BG_CACHE_SIZE:
+            _bg_cache.popitem(last=False)
+    return img, warnings
+
+
+_LINEAR = [(c / 255 / 12.92 if c / 255 <= 0.03928 else ((c / 255 + 0.055) / 1.055) ** 2.4) for c in range(256)]
+
+
+def _luminance_p90(img: Image.Image) -> float:
+    """90th percentile of WCAG relative luminance over a small copy of ``img``."""
+    small = img.copy()
+    small.thumbnail((96, 96))
+    data = small.convert("RGB").tobytes()
+    lin = _LINEAR
+    lums = sorted(0.2126 * lin[data[i]] + 0.7152 * lin[data[i + 1]] + 0.0722 * lin[data[i + 2]]
+                  for i in range(0, len(data), 3))
+    return lums[min(len(lums) - 1, int(len(lums) * 0.9))] if lums else 0.0
+
+
+def _to_rgb(img: Image.Image) -> Image.Image:
+    """convert("RGB") clips 16-bit and float images to white; stretch them
+    to 8 bits first so a 16-bit scan keeps its tones."""
+    if img.mode in ("I", "I;16", "I;16L", "I;16B", "I;16N", "F"):
+        lo, hi = img.getextrema()
+        if hi > lo:
+            scale = 255.0 / (hi - lo)
+            if img.mode.startswith("I;16"):
+                img = img.convert("I")                 # so point() accepts a scale and offset
+            img = img.point(lambda v: v * scale - lo * scale)
+        return img.convert("L").convert("RGB")
+    return img.convert("RGB")
+
+
+def _build_background(path: str, w: int, h: int) -> tuple[Image.Image, list[tuple[str, dict]]]:
     warnings: list[tuple[str, dict]] = []
     try:
         with Image.open(path) as src:
+            try:
+                turned = src.getexif().get(0x0112, 1) in (5, 6, 7, 8)
+            except Exception:
+                turned = False
+            raw_w, raw_h = src.size
+            sw, sh = (raw_h, raw_w) if turned else (raw_w, raw_h)
+            scale = max(w / sw, h / sh)
+            if scale < 1.0 and src.format == "JPEG":
+                # let the JPEG decoder shrink by 1/2, 1/4 or 1/8 while reading
+                tw, th = math.ceil(sw * scale), math.ceil(sh * scale)
+                try:
+                    src.draft("RGB", (th, tw) if turned else (tw, th))
+                except Exception:
+                    pass
             img = ImageOps.exif_transpose(src)
-            img = img.convert("RGB")
+            img = _to_rgb(img)
     except Exception as exc:
         raise BackgroundOpenError(path) from exc
-    sw, sh = img.size
-    scale = max(w / sw, h / sh)
     img = ImageOps.fit(img, (w, h), method=Image.Resampling.LANCZOS, centering=(0.5, 0.5))
     if scale > 1.0:
         img = img.filter(ImageFilter.GaussianBlur(radius=min(12.0, 1.0 + scale)))
         warnings.append(("warn_bg_low_res", {"width": sw, "height": sh}))
-    dark = Image.new("RGB", (w, h), "#000000")
-    img = Image.blend(img, dark, DARKEN)
+    img = Image.blend(img, Image.new("RGB", (w, h), "#000000"), DARKEN)
+    # a white photo is still far too bright for light text after a fixed
+    # blend: pull it down until 90% of the pixels are dark enough that light
+    # text reaches about 5:1 contrast (measured in WCAG relative luminance,
+    # where saturated greens are brighter than a plain gray of equal "L")
+    for _ in range(3):
+        p90 = _luminance_p90(img)
+        if p90 <= BG_LUM_MAX:
+            break
+        factor = (BG_LUM_MAX / p90) ** (1 / 2.2)
+        img = img.point([int(i * factor) for i in range(256)] * 3)
     return img, warnings
 
 
@@ -584,15 +784,62 @@ def to_bytes(image: Image.Image, fmt: str) -> bytes:
     return buf.getvalue()
 
 
-def save_cover(image: Image.Image, path: str, fmt: str) -> str:
-    """Write the cover next to a temp file then rename, so a crash never
-    leaves a half-written file. Returns the final path (numbered if taken)."""
-    path = unique_path(normalize_output(os.path.abspath(path), fmt))
+def new_temp_file(folder: str) -> tuple[int, str]:
+    """A fresh, uniquely named .part file next to the final destination."""
+    return tempfile.mkstemp(dir=folder or ".", prefix=".", suffix=".part")
+
+
+def move_no_overwrite(tmp: str, path: str) -> str:
+    """Move ``tmp`` to ``path`` without ever replacing something that is
+    already there: cover.jpg -> cover(2).jpg -> cover(3).jpg. The move itself
+    refuses to overwrite, so two processes saving at once get different
+    names. Returns the final path."""
+    base, ext = os.path.splitext(path)
+    n = 1
+    cand = path
+    retries = 0
+    while True:
+        try:
+            if os.name == "nt":
+                os.rename(tmp, cand)            # fails if the target exists
+            else:
+                os.link(tmp, cand)              # same: never replaces
+                os.unlink(tmp)
+            return cand
+        except FileExistsError:
+            pass
+        except PermissionError:
+            if not os.path.lexists(cand):       # a sharing violation, not a name clash
+                retries += 1
+                if retries > 20:
+                    raise
+                time.sleep(0.01)
+                continue
+        n += 1
+        cand = f"{base}({n}){ext}"
+        retries = 0
+
+
+def save_bytes(data: bytes, path: str) -> str:
+    """Write ``data`` to a temp file, then move it to ``path`` (numbered if
+    taken). A crash or a full disk never leaves a half-written result or a
+    stray .part file behind."""
+    path = os.path.abspath(path)
     folder = os.path.dirname(path)
-    if folder:
-        os.makedirs(folder, exist_ok=True)
-    tmp = path + ".part"
-    with open(tmp, "wb") as f:
-        f.write(to_bytes(image, fmt))
-    os.replace(tmp, path)
-    return path
+    os.makedirs(folder, exist_ok=True)
+    fd, tmp = new_temp_file(folder)
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+        return move_no_overwrite(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def save_cover(image: Image.Image, path: str, fmt: str) -> str:
+    """Save the cover; see save_bytes. Returns the final path."""
+    return save_bytes(to_bytes(image, fmt), normalize_output(os.path.abspath(path), fmt))
