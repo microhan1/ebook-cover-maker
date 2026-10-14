@@ -303,6 +303,42 @@ class WhenANoticeShows(Base):
         self.assertEqual(uc.interpret(dict(OK, latest="  0.3.0 "), "0.1.1").latest, "0.3.0")
 
 
+class EnglishPage(unittest.TestCase):
+    """[Update] opens the English tools page on a non-Korean screen when the server offers one.
+    What is sent to the server does not change (see WhatIsSent)."""
+
+    KO = "https://chaekgalpi.co.kr/tools/ebookcover?utm_source=app&utm_medium=update"
+    EN = "https://chaekgalpi.co.kr/en/tools/ebookcover?utm_source=app&utm_medium=update"
+
+    def info(self, **extra):
+        return uc.interpret(dict(OK, url=self.KO, **extra), "0.1.1")
+
+    def test_korean_screen_uses_the_korean_page(self):
+        self.assertEqual(uc.link_for(self.info(urlEn=self.EN), "ko"), self.KO)
+
+    def test_other_screens_use_the_english_page(self):
+        for lang in ("en", "ja", "zh-CN"):
+            with self.subTest(lang=lang):
+                self.assertEqual(uc.link_for(self.info(urlEn=self.EN), lang), self.EN)
+
+    def test_no_usable_english_page_falls_back_to_the_korean_one(self):
+        cases = {"null": dict(urlEn=None), "missing": {}, "other domain": dict(urlEn="https://evil.example/en"),
+                 "http": dict(urlEn="http://chaekgalpi.co.kr/en/tools/ebookcover"),
+                 "look-alike": dict(urlEn="https://chaekgalpi.co.kr.evil.example/en"),
+                 "number": dict(urlEn=5), "empty": dict(urlEn="")}
+        for name, extra in cases.items():
+            for lang in ("en", "ja", "zh-CN"):
+                with self.subTest(case=name, lang=lang):
+                    self.assertEqual(uc.link_for(self.info(**extra), lang), self.KO)
+
+    def test_a_bad_english_page_never_hides_the_notice(self):
+        self.assertIsNotNone(self.info(urlEn="javascript:alert(1)"))
+
+    def test_an_old_server_without_urlEn_still_works(self):
+        info = uc.interpret(OK, "0.1.1")
+        self.assertEqual((info.url_en, uc.link_for(info, "en")), ("", OK["url"]))
+
+
 class Settings(unittest.TestCase):
     def test_settings_are_type_checked(self):
         p = uc.load_prefs({"update_check": "no", "update_check_last": 20261013, "update_check_skipped": ["0.3.0"]})

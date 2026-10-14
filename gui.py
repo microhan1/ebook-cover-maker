@@ -808,11 +808,13 @@ class App:
     def _update_open(self) -> None:
         """The tools page, never a download: the site counts and serves the download."""
         info = self._update_info
-        if info is not None and info.url.startswith(update_check.SITE):
-            try:
-                webbrowser.open(info.url)
-            except Exception:
-                pass
+        if info is not None:
+            url = update_check.link_for(info, i18n.current_lang())    # the language on screen at the click
+            if url.startswith(update_check.SITE):
+                try:
+                    webbrowser.open(url)
+                except Exception:
+                    pass
         self._hide_update_notice()
 
     def _update_later(self) -> None:

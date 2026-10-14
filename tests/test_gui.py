@@ -821,6 +821,24 @@ class UpdateNotice(GuiCase):
             a._update_open()
         opener.assert_not_called()
 
+    def test_update_opens_the_page_for_the_language_on_screen(self):
+        a = self.app
+        en = "https://chaekgalpi.co.kr/en/tools/ebookcover?utm_source=app&utm_medium=update"
+        for lang, want in (("ko", self.URL), ("en", en), ("ja", en), ("zh-CN", en)):
+            with self.subTest(lang=lang):
+                a.cmb_lang.current(i18n.LANGS.index(lang))
+                a._on_lang()
+                a._on_update_result(update_check.UpdateInfo("0.3.0", APP_VERSION, self.URL, en), True)
+                with mock.patch.object(gui.webbrowser, "open") as opener:
+                    a.btn_update_open.invoke()
+                opener.assert_called_once_with(want)
+        a.cmb_lang.current(i18n.LANGS.index("en"))
+        a._on_lang()
+        a._on_update_result(update_check.UpdateInfo("0.3.0", APP_VERSION, self.URL), True)   # server gave no English page
+        with mock.patch.object(gui.webbrowser, "open") as opener:
+            a.btn_update_open.invoke()
+        opener.assert_called_once_with(self.URL)
+
     def test_a_result_that_arrives_while_closing_is_ignored(self):
         a = self.app
         a._closing = True
