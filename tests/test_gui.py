@@ -25,7 +25,9 @@ import fixtures as fx
 import i18n
 import presets
 import render
+import update_check
 from helpers import make_photo, sha
+from version import APP_VERSION
 from PIL import Image
 
 try:
@@ -289,6 +291,8 @@ class Languages(GuiCase):
                 self.settle()                                  # the warning lines appear only after the render
                 a.root.update()
                 for widget, key, attr in a._texts:
+                    if not widget.winfo_ismapped():
+                        continue                               # the folded-away notice buttons have no size
                     if widget.winfo_width() < widget.winfo_reqwidth() - 1:
                         problems.append((size, lang, key, widget.winfo_width(), widget.winfo_reqwidth()))
                 for cmb, keys in a._combos:
@@ -715,6 +719,189 @@ class Drops(GuiCase):
 
 
 # ---------------------------------------------------------------------------
+class UpdateNotice(GuiCase):
+    """The one-line "new version" notice: never a dialog, never moves the cards."""
+
+    URL = "https://chaekgalpi.co.kr/tools/ebookcover?utm_source=app&utm_medium=update"
+
+    def setUp(self):
+        super().setUp()
+        a = self.app
+        a._hide_update_notice()
+        a.upd = update_check.UpdatePrefs()
+        a.var_update_check.set(True)
+        self.reset_settings()
+
+    def info(self, latest="0.3.0", url=None):
+        return update_check.UpdateInfo(latest, APP_VERSION, url or self.URL)
+
+    def saved(self) -> dict:
+        with open(i18n.SETTINGS_PATH, encoding="utf-8") as f:
+            return json.load(f)
+
+    def test_checkbox_is_next_to_the_language_choice_and_on_by_default(self):
+        a = self.app
+        self.assertTrue(a.var_update_check.get())
+        self.assertEqual(a.chk_update.master, a.cmb_lang.master)
+        for lang in i18n.LANGS:
+            a.cmb_lang.current(i18n.LANGS.index(lang))
+            a._on_lang()
+            self.assertEqual(str(a.chk_update.cget("text")), lang_text(lang, "opt_update_check"))
+
+    def test_notice_text_and_buttons_in_every_language(self):
+        a = self.app
+        a._on_update_result(self.info(), True)
+        self.assertTrue(a.frm_update.winfo_manager())
+        for lang in i18n.LANGS:
+            a.cmb_lang.current(i18n.LANGS.index(lang))
+            a._on_lang()
+            self.assertEqual(str(a.lbl_update.cget("text")), lang_text(lang, "update_available", latest="0.3.0", current=APP_VERSION))
+            self.assertEqual(str(a.btn_update_open.cget("text")), lang_text(lang, "btn_update"))
+            self.assertEqual(str(a.btn_update_later.cget("text")), lang_text(lang, "btn_later"))
+        self.assertEqual(self.dialogs, [], "the notice must never be a dialog")
+
+    def test_the_four_exact_sentences(self):
+        a = self.app
+        a._on_update_result(self.info("0.2.0"), True)
+        want = {"ko": "새 버전이 나왔습니다: 0.2.0 (현재 %s)" % APP_VERSION,
+                "en": "Version 0.2.0 is available (current %s)" % APP_VERSION,
+                "ja": "新しいバージョン 0.2.0 があります（現在 %s）" % APP_VERSION,
+                "zh-CN": "有新版本 0.2.0（当前 %s）" % APP_VERSION}
+        for lang, sentence in want.items():
+            a.cmb_lang.current(i18n.LANGS.index(lang))
+            a._on_lang()
+            self.assertEqual(str(a.lbl_update.cget("text")), sentence)
+
+    def test_the_day_is_recorded_only_when_the_server_answered(self):
+        a = self.app
+        a._on_update_result(None, False)                      # offline
+        self.assertEqual(a.upd.update_check_last, "")
+        self.assertFalse(a.frm_update.winfo_manager())
+        a._on_update_result(None, True)                       # answered: nothing newer
+        self.assertEqual(a.upd.update_check_last, update_check.today())
+        self.assertEqual(self.saved()["update_check_last"], update_check.today())
+        self.assertFalse(a.frm_update.winfo_manager())
+
+    def test_switched_off_shows_nothing_and_toggling_off_hides_and_saves(self):
+        a = self.app
+        a.var_update_check.set(False)
+        a._on_update_result(self.info(), True)
+        self.assertFalse(a.frm_update.winfo_manager())
+        a.var_update_check.set(True)
+        a._on_update_result(self.info(), True)
+        self.assertTrue(a.frm_update.winfo_manager())
+        a.var_update_check.set(False)
+        a.chk_update.invoke() if False else a._on_update_toggle()
+        self.assertFalse(a.frm_update.winfo_manager())
+        self.assertIs(self.saved()["update_check"], False)
+        a.var_update_check.set(True)
+        a._on_update_toggle()
+        self.assertIs(self.saved()["update_check"], True)
+
+    def test_later_remembers_that_version_only(self):
+        a = self.app
+        a._on_update_result(self.info("0.3.0"), True)
+        a.btn_update_later.invoke()
+        self.assertFalse(a.frm_update.winfo_manager())
+        self.assertEqual(self.saved()["update_check_skipped"], "0.3.0")
+        self.assertIsNone(update_check.interpret({"updateAvailable": True, "latest": "0.3.0", "url": self.URL}, APP_VERSION,
+                                                 a.upd.update_check_skipped))
+        self.assertIsNotNone(update_check.interpret({"updateAvailable": True, "latest": "0.3.1", "url": self.URL}, APP_VERSION,
+                                                    a.upd.update_check_skipped))
+
+    def test_update_opens_the_tools_page_and_nothing_else(self):
+        a = self.app
+        a._on_update_result(self.info(), True)
+        with mock.patch.object(gui.webbrowser, "open") as opener:
+            a.btn_update_open.invoke()
+        opener.assert_called_once_with(self.URL)
+        self.assertFalse(a.frm_update.winfo_manager())
+        a._update_info = self.info(url="https://evil.example/x")        # even if a bad address got this far
+        with mock.patch.object(gui.webbrowser, "open") as opener:
+            a._update_open()
+        opener.assert_not_called()
+
+    def test_a_result_that_arrives_while_closing_is_ignored(self):
+        a = self.app
+        a._closing = True
+        a._on_update_result(self.info(), True)
+        a._closing = False
+        self.assertFalse(a.frm_update.winfo_manager())
+        self.assertFalse(os.path.exists(i18n.SETTINGS_PATH))
+
+    def test_showing_the_notice_does_not_move_anything(self):
+        """The window grows by exactly the height of the notice, so the two columns of cards stay put."""
+        a = self.app
+        a.root.deiconify()
+        a.root.geometry(f"{a.px(1120)}x{a.px(800)}")
+        a.root.update()
+        a.root.update_idletasks()
+
+        def layout():
+            a.root.update()
+            r = a.root
+            widgets = [a.cmb_lang, a.chk_update, a.btn_save, a.btn_epub, a.txt_log, a.preview_holder, a.lbl_status,
+                       a.cmb_preset, a.cmb_font, a.btn_bg_browse, a.ent_epub, *a.entries.values()]
+            return [(w.winfo_rootx() - r.winfo_rootx(), w.winfo_rooty() - r.winfo_rooty(), w.winfo_width(), w.winfo_height())
+                    for w in widgets], r.winfo_width(), r.winfo_height()
+
+        try:
+            before, w0, h0 = layout()
+            a._on_update_result(self.info(), True)
+            after, w1, h1 = layout()
+            self.assertEqual(after, before, "a card moved or resized when the notice appeared")
+            self.assertEqual(w1, w0)
+            self.assertGreater(h1, h0)
+            self.assertEqual(h1 - h0, a._notice_extra)
+            self.assertLess(a.frm_update.winfo_rooty() - a.root.winfo_rooty() + a.frm_update.winfo_height(), h1 + 1,
+                            "the notice is cut off at the bottom")
+            a._hide_update_notice()
+            back, w2, h2 = layout()
+            self.assertEqual((back, w2, h2), (before, w0, h0), "the window did not return to its size")
+            self.assertEqual(a._notice_extra, 0)
+        finally:
+            a.root.withdraw()
+
+    def test_a_second_result_does_not_grow_the_window_again(self):
+        a = self.app
+        a.root.deiconify()
+        a.root.update()
+        try:
+            a._on_update_result(self.info("0.3.0"), True)
+            a.root.update()
+            h = a.root.winfo_height()
+            extra = a._notice_extra
+            a._on_update_result(self.info("0.4.0"), True)
+            a.root.update()
+            self.assertEqual((a.root.winfo_height(), a._notice_extra), (h, extra))
+            self.assertIn("0.4.0", str(a.lbl_update.cget("text")))
+        finally:
+            a._hide_update_notice()
+            a.root.withdraw()
+
+    def test_the_notice_fits_in_every_language(self):
+        a = self.app
+        a.root.deiconify()
+        problems = []
+        try:
+            a._on_update_result(self.info("0.10.12"), True)
+            for lang in i18n.LANGS:
+                a.cmb_lang.current(i18n.LANGS.index(lang))
+                a._on_lang()
+                a.root.update()
+                for w in (a.lbl_update, a.btn_update_open, a.btn_update_later):
+                    if w.winfo_width() < w.winfo_reqwidth() - 1:
+                        problems.append((lang, str(w), w.winfo_width(), w.winfo_reqwidth()))
+                right = a.btn_update_open.winfo_rootx() - a.root.winfo_rootx() + a.btn_update_open.winfo_width()
+                if right > a.root.winfo_width():
+                    problems.append((lang, "buttons outside the window"))
+        finally:
+            a._hide_update_notice()
+            a.root.withdraw()
+        self.assertEqual(problems, [])
+
+
+# ---------------------------------------------------------------------------
 class FreshWindow(unittest.TestCase):
     """Tk is only reliable with one window per process, so every scenario that
     needs a brand-new window runs in its own process (gui_scenarios.py)."""
@@ -753,6 +940,30 @@ class FreshWindow(unittest.TestCase):
 
     def test_closing_writes_settings_but_never_book_text(self):
         self.scenario("closing_writes_settings")
+
+    def test_update_check_asks_once_with_only_name_version_and_os(self):
+        self.scenario("update_flow", mode="asks_once")
+
+    def test_update_check_switched_off_never_asks(self):
+        self.scenario("update_flow", mode="off")
+
+    def test_update_check_already_done_today_does_not_ask(self):
+        self.scenario("update_flow", mode="already_today")
+
+    def test_update_check_offline_does_not_use_up_the_day(self):
+        self.scenario("update_flow", mode="offline")
+
+    def test_update_check_skipped_version_shows_no_notice(self):
+        self.scenario("update_flow", mode="skipped")
+
+    def test_closing_while_the_update_request_is_out_survives_three_times(self):
+        """A crash here (Tcl_AsyncDelete) kills the whole process, so each round is its own process."""
+        for round_ in range(3):
+            with self.subTest(round=round_):
+                self.scenario("update_flow", mode="close_during_request")
+
+    def test_update_check_never_blocks_or_shows_errors_when_the_server_is_slow(self):
+        self.scenario("update_flow", mode="slow")
 
     def test_closing_while_a_render_is_running_is_clean(self):
         self.scenario("close_during_render")

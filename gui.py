@@ -7,6 +7,7 @@ import subprocess
 import sys
 import threading
 import tkinter as tk
+import webbrowser
 import tkinter.font as tkfont
 from tkinter import colorchooser, filedialog, messagebox, ttk
 
@@ -16,8 +17,10 @@ import epub_insert
 import i18n
 import presets
 import render
+import update_check
 from i18n import t
 from render import Options
+from version import APP_VERSION, UPDATE_SLUG
 
 try:
     from tkinterdnd2 import DND_FILES, TkinterDnD
@@ -36,6 +39,8 @@ ACCENT_DARK = "#1d4ed8"
 NOTICE = "#d97706"
 NOTICE_DARK = "#b45309"          # warning text: NOTICE itself is too pale for small text on white
 PREVIEW_BG = "#e5e7eb"
+UPDATE_BG = "#eff6ff"
+UPDATE_BORDER = "#bfdbfe"
 UI_FONTS = {
     "ko": ("Malgun Gothic",),
     "ja": ("Yu Gothic UI", "Meiryo UI", "MS UI Gothic"),
@@ -86,7 +91,8 @@ class App:
         self.root = TkinterDnD.Tk() if _HAS_DND else tk.Tk()
         self.scale = max(1.0, min(3.0, self.root.winfo_fpixels("1i") / 96.0))
         self.root.geometry(f"{self.px(1120)}x{self.px(800)}")
-        self.root.minsize(self.px(1000), self.px(720))
+        self._min_size = (self.px(1000), self.px(720))
+        self.root.minsize(*self._min_size)
 
         self.worker: threading.Thread | None = None
         self.preview_gen = 0
@@ -107,6 +113,10 @@ class App:
         saved = _saved_options(settings)
         last_dir = settings.get("last_dir")
         self._last_dir = last_dir if isinstance(last_dir, str) and os.path.isdir(last_dir) else ""
+        self.upd = update_check.load_prefs(settings)
+        self.var_update_check = tk.BooleanVar(value=self.upd.update_check)
+        self._update_info: update_check.UpdateInfo | None = None
+        self._notice_extra = 0                         # how much taller the window is made while the notice shows
         self.var_title = tk.StringVar()
         self.var_subtitle = tk.StringVar()
         self.var_author = tk.StringVar(value=saved.author)
@@ -136,6 +146,8 @@ class App:
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self._update_gate()
         self._preview_job = self.root.after(50, self._refresh_preview)
+        # one quiet check after the window is up; never blocks, never shows an error
+        update_check.check_async(self.root, UPDATE_SLUG, APP_VERSION, self.upd, self._on_update_result)
 
     # ------------------------------------------------------------ building
     def px(self, n: int) -> int:
@@ -216,6 +228,11 @@ class App:
                         padding=(self.px(22), self.px(8)))
         style.map("Accent.TButton", background=[("active", ACCENT_DARK), ("disabled", "#93c5fd")],
                   foreground=[("disabled", "white")], bordercolor=[("disabled", "#93c5fd")])
+        style.configure("TCheckbutton", background=BG, indicatorsize=self.px(14))
+        style.map("TCheckbutton", background=[("active", BG)])
+        style.configure("AccentSmall.TButton", background=ACCENT, foreground="white", bordercolor=ACCENT,
+                        lightcolor=ACCENT, darkcolor=ACCENT, font=self.font_bold, padding=(self.px(12), self.px(3)))
+        style.map("AccentSmall.TButton", background=[("active", ACCENT_DARK)])
         style.configure("Card.TRadiobutton", background=CARD, indicatorsize=self.px(13))
         style.map("Card.TRadiobutton", background=[("active", CARD)])
         for widget in ("TCombobox", "TSpinbox"):
@@ -266,6 +283,9 @@ class App:
         self._reg(ttk.Label(head, style="Muted.TLabel"), "app_tagline").grid(row=1, column=0, sticky="w")
         lang = ttk.Frame(head)
         lang.grid(row=0, column=1, rowspan=2, sticky="e")
+        self.chk_update = self._reg(ttk.Checkbutton(lang, variable=self.var_update_check,
+                                                    command=self._on_update_toggle), "opt_update_check")
+        self.chk_update.pack(side="left", padx=(0, self.px(18)))
         self._reg(ttk.Label(lang, style="Muted.TLabel"), "lbl_language").pack(side="left", padx=(0, self.px(8)))
         self.cmb_lang = ttk.Combobox(lang, state="readonly", width=10, textvariable=self.var_lang,
                                      values=[i18n.LANG_NAMES[c] for c in i18n.LANGS])
@@ -422,6 +442,16 @@ class App:
                                highlightcolor=BORDER, font=self.font_small, padx=self.px(6), pady=self.px(4))
         self.txt_log.grid(row=1, column=0, sticky="ew")
 
+        self.frm_update = tk.Frame(root, background=UPDATE_BG, highlightthickness=1, highlightbackground=UPDATE_BORDER)
+        self.lbl_update = tk.Label(self.frm_update, background=UPDATE_BG, foreground=TEXT, font=self.font_body, anchor="w")
+        self.lbl_update.pack(side="left", fill="x", expand=True, padx=(self.px(12), self.px(8)), pady=self.px(6))
+        self.btn_update_later = self._reg(ttk.Button(self.frm_update, style="Small.TButton", command=self._update_later),
+                                          "btn_later")
+        self.btn_update_later.pack(side="right", padx=(self.px(6), self.px(10)), pady=self.px(5))
+        self.btn_update_open = self._reg(ttk.Button(self.frm_update, style="AccentSmall.TButton",
+                                                    command=self._update_open), "btn_update")
+        self.btn_update_open.pack(side="right", pady=self.px(5))
+
         if _HAS_DND:
             for w in (root, self.lbl_preview, self.preview_holder, self.lbl_drop):
                 w.drop_target_register(DND_FILES)
@@ -442,6 +472,9 @@ class App:
             cmb.current(max(0, idx))
         self._show_warnings()
         self._update_gate()
+        if self._update_info is not None:                # the notice follows the language too
+            self.lbl_update.configure(text=t("update_available", latest=self._update_info.latest,
+                                             current=self._update_info.current))
         if self._status_key:
             self._set_status(self._status_key, **self._status_kwargs)
 
@@ -474,6 +507,8 @@ class App:
         o = self.options()
         settings["options"] = {k: getattr(o, k) for k in OPTION_KEYS}
         settings["last_dir"] = self._last_dir
+        self.upd.update_check = bool(self.var_update_check.get())
+        update_check.store_prefs(settings, self.upd)
         i18n.save_settings(settings)
 
     def _set_running(self, running: bool) -> None:
@@ -724,6 +759,72 @@ class App:
     def _open_result(self) -> None:
         if self._result_path and os.path.exists(self._result_path):
             subprocess.Popen(["explorer", "/select,", os.path.normpath(self._result_path)])
+
+    # ------------------------------------------------------------ new version notice
+    def _on_update_result(self, info: update_check.UpdateInfo | None, answered: bool) -> None:
+        """Tk thread. The day is recorded only when the server answered, so an offline
+        start asks again next time."""
+        if self._closing:
+            return
+        if answered:
+            self.upd.update_check_last = update_check.today()
+            self._save_settings()
+        if info is not None and self.var_update_check.get():
+            self._update_info = info
+            self._show_update_notice()
+
+    def _resize_for_notice(self, dy: int) -> None:
+        """The notice is one line under the two columns. Making the window exactly that much
+        taller (and its minimum too) keeps every card where it was, instead of squeezing them."""
+        self._notice_extra = max(0, self._notice_extra + dy)
+        self.root.minsize(self._min_size[0], self._min_size[1] + self._notice_extra)
+        try:
+            if self.root.state() != "normal":
+                return
+            w, h = self.root.winfo_width(), self.root.winfo_height()
+            limit = max(h, self.root.winfo_screenheight() - self.px(80))
+            self.root.geometry(f"{w}x{min(h + dy, limit)}")
+        except tk.TclError:
+            pass
+
+    def _show_update_notice(self) -> None:
+        info = self._update_info
+        if info is None:
+            self._hide_update_notice()
+            return
+        self.lbl_update.configure(text=t("update_available", latest=info.latest, current=info.current))
+        if self.frm_update.winfo_manager():
+            return
+        self.frm_update.grid(row=1, column=0, sticky="ew", padx=self.px(20), pady=(0, self.px(14)))
+        self.root.update_idletasks()
+        self._resize_for_notice(self.frm_update.winfo_reqheight() + self.px(14))
+
+    def _hide_update_notice(self) -> None:
+        self._update_info = None
+        if self.frm_update.winfo_manager():
+            self.frm_update.grid_remove()
+            self._resize_for_notice(-self._notice_extra)
+
+    def _update_open(self) -> None:
+        """The tools page, never a download: the site counts and serves the download."""
+        info = self._update_info
+        if info is not None and info.url.startswith(update_check.SITE):
+            try:
+                webbrowser.open(info.url)
+            except Exception:
+                pass
+        self._hide_update_notice()
+
+    def _update_later(self) -> None:
+        if self._update_info is not None:
+            self.upd.update_check_skipped = self._update_info.latest      # a newer one is shown again
+            self._save_settings()
+        self._hide_update_notice()
+
+    def _on_update_toggle(self) -> None:
+        self._save_settings()
+        if not self.var_update_check.get():
+            self._hide_update_notice()
 
     # ------------------------------------------------------------ closing
     def _on_close(self) -> None:

@@ -2,7 +2,7 @@
 
 [한국어](README.md) · [中文](README.zh-CN.md) · [日本語](README.ja.md)
 
-Type a title, an author and a publisher name and get an ebook cover image that passes self-publishing platform checks (600–1000 px wide, publisher name at the bottom, as required by upaper.net). It is a compliance cover generator, not a design tool. No server, no install, the original EPUB and background image are never modified.
+Type a title, an author and a publisher name and get an ebook cover image that passes self-publishing platform checks (600–1000 px wide, publisher name at the bottom, as required by upaper.net). It is a compliance cover generator, not a design tool. No server, no install, the original EPUB and background image are never modified (the new-version check is the one exception, and it can be turned off).
 
 ![Ebook Cover Maker window: details, design, preview, put it into an EPUB](docs/app.png)
 
@@ -48,6 +48,13 @@ python main.py --title "Title" --author "Author" --publisher "Publisher" --bg ph
 - No illustration or photo generation.
 - No print covers (spine, back, bleed).
 - No extra fonts. Only the three bundled ones (body, title, serif).
+- It never downloads or replaces a newer version by itself.
+
+## Checking for a new version
+
+To see whether a newer version exists, the app sends only the tool's name and its version to the Chaekgalpi server (chaekgalpi.co.kr) when it starts. No files are sent, it checks at most once a day, and you can turn it off in the settings: untick "Check for updates" at the top right of the window. If a newer version exists, one line appears at the bottom of the window, and **Update** opens the Chaekgalpi tools page in your browser.
+
+![New-version notice: one line at the bottom of the window](docs/update_notice.png)
 
 ## Fonts
 

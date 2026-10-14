@@ -24,6 +24,21 @@ import i18n  # noqa: E402
 _SETTINGS_DIR = tempfile.mkdtemp(prefix="ecm_settings_")
 i18n.SETTINGS_PATH = os.path.join(_SETTINGS_DIR, "settings.json")
 
+import update_check  # noqa: E402
+
+# No test may reach the real 책갈피 server: the window asks for a new version on its own
+# 1.5 s after it opens. Tests of the request itself use REAL_FETCH with a fake opener.
+REAL_FETCH = update_check.fetch
+NETWORK_CALLS: list = []
+
+
+def _offline(slug, version, **kwargs):
+    NETWORK_CALLS.append((slug, version))
+    return None
+
+
+update_check.fetch = _offline
+
 from PIL import Image, ImageStat  # noqa: E402
 
 import render  # noqa: E402

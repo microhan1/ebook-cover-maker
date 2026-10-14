@@ -23,7 +23,9 @@ import fixtures as fx
 import i18n
 import presets
 import render
+import update_check
 from gui_support import alive, pump, put, sleep_pump
+from version import APP_VERSION, UPDATE_SLUG
 
 import gui
 
@@ -146,6 +148,78 @@ def close_during_insert() -> None:
     with zipfile.ZipFile(out) as z:
         assert z.testzip() is None
     assert [n for n in os.listdir(tmp) if n.endswith(".part")] == [], "a .part file was left behind"
+    assert not ERRORS, ERRORS
+
+
+def update_flow(mode: str) -> None:
+    """One window start with a faked server. The real server is never contacted."""
+    calls: list = []
+    answer = {"slug": "ebookcover", "latest": "0.3.0", "updateAvailable": True,
+              "url": "https://chaekgalpi.co.kr/tools/ebookcover?utm_source=app&utm_medium=update"}
+
+    def fake(slug, version, **kwargs):
+        calls.append((slug, version, threading.current_thread().name))
+        if mode == "offline":
+            return None
+        if mode == "close_during_request":
+            time.sleep(2.0)                                    # the window is closed while this is still out
+        if mode == "slow":
+            time.sleep(4.5)                                    # longer than the whole scene: must not freeze the window
+        return answer
+
+    update_check.fetch = fake
+    settings = {}
+    if mode == "off":
+        settings = {"update_check": False}
+    elif mode == "already_today":
+        settings = {"update_check_last": update_check.today()}
+    elif mode == "skipped":
+        settings = {"update_check_skipped": "0.3.0"}
+    write_settings(json.dumps(settings))
+    app = new_app()
+    if mode == "close_during_request":
+        import gc
+
+        sleep_pump(app, 1.9)                                   # the request started at 1.5 s and is still waiting
+        assert len(calls) == 1, calls
+        close_and_wait(app)
+        del app
+        gc.collect()                                           # frees what the thread might still hold, on THIS thread
+        time.sleep(2.5)                                        # the request finishes against a closed window
+        gc.collect()
+        assert not ERRORS, ERRORS
+        return
+    t0 = time.time()
+    sleep_pump(app, 2.6 if mode != "slow" else 3.0)
+    ui_lag = time.time() - t0
+    notice = bool(app.frm_update.winfo_manager())
+    if mode == "asks_once":
+        assert calls == [(UPDATE_SLUG, APP_VERSION, "update-check")], calls         # a background thread, not the UI
+        assert notice, "the notice did not appear"
+        assert app.var_update_check.get() is True
+        saved = json.load(open(i18n.SETTINGS_PATH, encoding="utf-8"))
+        assert saved["update_check_last"] == update_check.today(), saved
+        assert saved["update_check"] is True, saved
+    elif mode in ("off", "already_today"):
+        assert calls == [], calls
+        assert not notice
+    elif mode == "offline":
+        assert len(calls) == 1 and not notice
+        saved = json.load(open(i18n.SETTINGS_PATH, encoding="utf-8")) if os.path.exists(i18n.SETTINGS_PATH) else {}
+        assert saved.get("update_check_last", "") == "", saved
+    elif mode == "skipped":
+        assert len(calls) == 1 and not notice, (calls, notice)
+        saved = json.load(open(i18n.SETTINGS_PATH, encoding="utf-8"))
+        assert saved["update_check_last"] == update_check.today(), saved           # answered, so the day counts
+    elif mode == "slow":
+        assert len(calls) == 1 and not notice
+        assert ui_lag < 3.6, f"the window stalled for {ui_lag:.1f}s"
+        # the window can be closed while the answer is still on its way
+        close_and_wait(app)
+        time.sleep(2.0)                                                            # the late answer meets a closed window
+        assert not ERRORS, ERRORS
+        return
+    close_and_wait(app)
     assert not ERRORS, ERRORS
 
 

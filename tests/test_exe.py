@@ -92,6 +92,9 @@ class ExeCase(unittest.TestCase):
         os.makedirs(self.cwd)
         self.settings = os.path.join(self.home, "settings.json")
         self.procs: list[subprocess.Popen] = []
+        # the exe asks the real server for a new version 1.5 s after it opens; only the test made for that may do so
+        with open(self.settings, "w", encoding="utf-8") as f:
+            json.dump({"update_check": False}, f)
 
     def tearDown(self):
         for p in self.procs:
@@ -132,8 +135,9 @@ class Launch(ExeCase):
         """Settings supply a publisher and author, so the preview must show real text
         in the bundled Noto font; a missing font would leave the cover blank."""
         with open(self.settings, "w", encoding="utf-8") as f:
-            json.dump({"lang": "ko", "options": {"publisher": "유페이퍼 출판", "author": "홍길동",
-                                                 "template": 1, "color": 1}}, f, ensure_ascii=False)
+            json.dump({"lang": "ko", "update_check": False,
+                       "options": {"publisher": "유페이퍼 출판", "author": "홍길동", "template": 1, "color": 1}},
+                      f, ensure_ascii=False)
         proc, hwnd, title, _ = self.launch()
         self.assertEqual(title, json.load(open(os.path.join(helpers.ROOT, "lang", "ko.json"), encoding="utf-8"))["app_title"])
         time.sleep(2.5)                                    # first preview
@@ -190,10 +194,47 @@ class Launch(ExeCase):
 
     def test_second_launch_reads_what_the_first_saved(self):
         with open(self.settings, "w", encoding="utf-8") as f:
-            json.dump({"lang": "ja"}, f)
+            json.dump({"lang": "ja", "update_check": False}, f)
         proc, hwnd, title, _ = self.launch()
         self.assertEqual(title, json.load(open(os.path.join(helpers.ROOT, "lang", "ja.json"), encoding="utf-8"))["app_title"])
         self.close(proc, hwnd)
+
+    def test_new_version_check_records_the_day_in_settings_beside_the_exe(self):
+        """The real exe, the real server: one read-only request with name, version and OS. Skipped when offline."""
+        import datetime
+        import urllib.request
+
+        try:
+            urllib.request.urlopen("https://chaekgalpi.co.kr/api/tools/ebookcover/latest?v=0.0.1&os=win", timeout=8).read(1)
+        except Exception as exc:
+            self.skipTest(f"the server cannot be reached from here: {exc}")
+        with open(self.settings, "w", encoding="utf-8") as f:
+            json.dump({"lang": "ko"}, f)                                  # update_check is on by default
+        proc, hwnd, _, _ = self.launch()
+        deadline = time.time() + 25
+        recorded = ""
+        while time.time() < deadline and not recorded:
+            time.sleep(0.5)
+            try:
+                recorded = json.load(open(self.settings, encoding="utf-8")).get("update_check_last", "")
+            except (OSError, ValueError):
+                recorded = ""
+        shot = capture(hwnd)
+        shot.save(os.path.join(self._tmp.name, "exe_update_check.png"))
+        self.close(proc, hwnd)
+        self.assertEqual(recorded, datetime.date.today().isoformat(), "update_check_last was not written after the answer")
+        saved = json.load(open(self.settings, encoding="utf-8"))
+        self.assertIs(saved["update_check"], True)
+
+    def test_switched_off_the_exe_never_records_a_check(self):
+        with open(self.settings, "w", encoding="utf-8") as f:
+            json.dump({"lang": "ko", "update_check": False}, f)
+        proc, hwnd, _, _ = self.launch()
+        time.sleep(5)                                                     # well past the 1.5 s delay
+        self.close(proc, hwnd)
+        saved = json.load(open(self.settings, encoding="utf-8"))
+        self.assertEqual(saved.get("update_check_last", ""), "")
+        self.assertIs(saved["update_check"], False)
 
     def test_bundle_contains_every_resource(self):
         from PyInstaller.archive.readers import CArchiveReader

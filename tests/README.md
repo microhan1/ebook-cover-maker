@@ -18,8 +18,9 @@ python -m unittest discover -s tests -p "test_cli.py"
 | `test_epub.py`, `test_epub_matrix.py` | EPUB insertion into many shapes of EPUB (percent-encoded paths, OPF encodings, title pages that must not be overwritten, damaged zips, races) |
 | `test_cli.py` | exit codes, messages in all four languages, bad arguments, EPUB flows |
 | `test_i18n.py` | language files, the arguments the code passes to `t()`, language choice order |
+| `test_update_check.py` | the new-version check: once a day, off switch, what is sent, silent failures, only tools-site links (the network is always faked) |
 | `test_gui.py` | the real Tk window: gate, language switch, truncation, preview speed and ordering, save and EPUB flows, drops |
-| `test_exe.py` | the built exe (skipped unless `dist/ebook-cover-maker.exe` exists) |
+| `test_exe.py` | the built exe (skipped unless `dist/ebook-cover-maker.exe` exists); one test asks the real server once, read-only, and is skipped when offline |
 
 ## Options
 
