@@ -24,20 +24,64 @@ import i18n  # noqa: E402
 _SETTINGS_DIR = tempfile.mkdtemp(prefix="ecm_settings_")
 i18n.SETTINGS_PATH = os.path.join(_SETTINGS_DIR, "settings.json")
 
+import unittest  # noqa: E402
+import urllib.error  # noqa: E402
+import urllib.request  # noqa: E402
+
 import update_check  # noqa: E402
 
-# No test may reach the real 책갈피 server: the window asks for a new version on its own
-# 1.5 s after it opens. Tests of the request itself use REAL_FETCH with a fake opener.
+# ------------------------------------------------------------------ never reach the real server
+# The window asks the 책갈피 server for a new version on its own 1.5 s after it opens, and the
+# settings file is isolated per test, so the once-a-day guard is always open. Three layers:
+#   1. update_check.fetch (what check_async calls when no fetcher is given) -> _offline
+#   2. the real fetch's default opener and urllib.request.urlopen itself  -> _guard_urlopen
+#   3. every test that made layer 2 record something fails (see _guarded_run)
+# Layer 1 calls are expected (every window start makes one) and are only counted.
+# Tests of the request itself use REAL_FETCH with an explicit fake opener.
 REAL_FETCH = update_check.fetch
-NETWORK_CALLS: list = []
+REAL_URLOPEN = urllib.request.urlopen
+NETWORK_CALLS: list = []          # (test, slug, version): stopped at layer 1, by design
+BLOCKED: list = []                # (test, url): reached layer 2 - a test bug, the test fails
+_CURRENT = ["(no test)"]
 
 
 def _offline(slug, version, **kwargs):
-    NETWORK_CALLS.append((slug, version))
+    NETWORK_CALLS.append((_CURRENT[0], slug, version))
     return None
 
 
+def _guard_urlopen(req, *args, **kwargs):
+    url = req.full_url if hasattr(req, "full_url") else str(req)
+    if "chaekgalpi.co.kr" in url:
+        BLOCKED.append((_CURRENT[0], url))
+        raise urllib.error.URLError("blocked in tests: the real 책갈피 server must not be called")
+    return REAL_URLOPEN(req, *args, **kwargs)
+
+
 update_check.fetch = _offline
+urllib.request.urlopen = _guard_urlopen
+if REAL_FETCH.__kwdefaults__ and "opener" in REAL_FETCH.__kwdefaults__:
+    REAL_FETCH.__kwdefaults__["opener"] = _guard_urlopen
+
+_orig_run = unittest.TestCase.run
+
+
+def _guarded_run(self, result=None):
+    _CURRENT[0] = self.id()
+    before = len(BLOCKED)
+    try:
+        return _orig_run(self, result)
+    finally:
+        new = BLOCKED[before:]
+        if new and result is not None:
+            try:
+                raise AssertionError(f"this test tried to reach the real 책갈피 server: {[u for _, u in new]}")
+            except AssertionError:
+                result.addFailure(self, sys.exc_info())
+        _CURRENT[0] = "(no test)"
+
+
+unittest.TestCase.run = _guarded_run
 
 from PIL import Image, ImageStat  # noqa: E402
 

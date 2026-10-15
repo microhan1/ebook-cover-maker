@@ -226,5 +226,8 @@ def update_flow(mode: str) -> None:
 if __name__ == "__main__":
     name = sys.argv[1]
     kwargs = json.loads(sys.argv[2]) if len(sys.argv) > 2 else {}
+    helpers._CURRENT[0] = f"gui_scenarios.{name}"
     globals()[name](**kwargs)
+    assert not helpers.BLOCKED, f"the scenario tried to reach the real server: {helpers.BLOCKED}"
+    print(f"NETWORK_CALLS={len(helpers.NETWORK_CALLS)}")
     print("OK")

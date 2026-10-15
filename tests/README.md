@@ -20,7 +20,7 @@ python -m unittest discover -s tests -p "test_cli.py"
 | `test_i18n.py` | language files, the arguments the code passes to `t()`, language choice order |
 | `test_update_check.py` | the new-version check: once a day, off switch, what is sent, silent failures, only tools-site links (the network is always faked) |
 | `test_gui.py` | the real Tk window: gate, language switch, truncation, preview speed and ordering, save and EPUB flows, drops |
-| `test_exe.py` | the built exe (skipped unless `dist/ebook-cover-maker.exe` exists); one test asks the real server once, read-only, and is skipped when offline |
+| `test_exe.py` | the built exe (skipped unless `dist/ebook-cover-maker.exe` exists); its update check lands in a local proxy trap |
 
 ## Options
 
@@ -32,6 +32,10 @@ python -m unittest discover -s tests -p "test_cli.py"
 ## Notes
 
 * `helpers.py` redirects the settings file to a temp folder. No test touches a real `settings.json`.
+* No test reaches the real 책갈피 server (2026-10-15). `helpers.py` replaces `update_check.fetch`, guards
+  `urllib.request.urlopen` and the real fetch's default opener, and fails any test that reaches the guard.
+  `test_exe.py` points the exe's `HTTPS_PROXY` at a local trap that records and drops the connection.
+  The one real request is a release check: `ECM_LIVE_UPDATE_CHECK=1`.
 * Tk is only reliable with one window per process. `test_gui.py` shares one window and runs scenarios that
   need a fresh window (damaged settings, closing during work) in their own process through `gui_scenarios.py`.
 * Every CLI test passes `--lang`, and none of them calls `main.py` without title, author and publisher

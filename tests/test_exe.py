@@ -81,6 +81,54 @@ def capture(hwnd) -> Image.Image:
     return Image.frombuffer("RGBA", (w, h), buf, "raw", "BGRA", 0, 1).convert("RGB")
 
 
+LIVE = os.environ.get("ECM_LIVE_UPDATE_CHECK") == "1"     # the one real request, for a release check only
+
+
+class ProxyTrap:
+    """A local HTTPS proxy that answers nobody. The exe's urllib honours HTTPS_PROXY, so every
+    request it makes arrives here as "CONNECT host:443" and is recorded, then the connection is
+    closed: the exe sees "offline" and the real server is never reached."""
+
+    def __init__(self):
+        import socket
+        import threading
+
+        self.seen: list[str] = []
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.sock.bind(("127.0.0.1", 0))
+        self.sock.listen(8)
+        self.sock.settimeout(0.5)
+        self.port = self.sock.getsockname()[1]
+        self.running = True
+        self.thread = threading.Thread(target=self._serve, daemon=True)
+        self.thread.start()
+
+    def _serve(self):
+        while self.running:
+            try:
+                conn, _ = self.sock.accept()
+            except OSError:
+                continue
+            with conn:
+                conn.settimeout(2)
+                try:
+                    first = conn.recv(1024).split(b"\r\n", 1)[0].decode("latin-1")
+                except OSError:
+                    first = "?"
+                self.seen.append(first)
+
+    def env(self) -> dict:
+        proxy = f"http://127.0.0.1:{self.port}"
+        env = dict(os.environ, HTTPS_PROXY=proxy, HTTP_PROXY=proxy, https_proxy=proxy, http_proxy=proxy)
+        env.pop("NO_PROXY", None)
+        env.pop("no_proxy", None)
+        return env
+
+    def close(self):
+        self.running = False
+        self.sock.close()
+
+
 class ExeCase(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -92,9 +140,12 @@ class ExeCase(unittest.TestCase):
         os.makedirs(self.cwd)
         self.settings = os.path.join(self.home, "settings.json")
         self.procs: list[subprocess.Popen] = []
-        # the exe asks the real server for a new version 1.5 s after it opens; only the test made for that may do so
+        # the exe asks the server for a new version 1.5 s after it opens: every launch goes through
+        # the proxy trap, so no test reaches the real server (the LIVE release check excepted)
         with open(self.settings, "w", encoding="utf-8") as f:
             json.dump({"update_check": False}, f)
+        self.trap = ProxyTrap()
+        self.addCleanup(self.trap.close)
 
     def tearDown(self):
         for p in self.procs:
@@ -103,8 +154,8 @@ class ExeCase(unittest.TestCase):
         time.sleep(0.3)
         self._tmp.cleanup()
 
-    def launch(self, *args):
-        p = subprocess.Popen([self.exe, *args], cwd=self.cwd)
+    def launch(self, *args, live: bool = False):
+        p = subprocess.Popen([self.exe, *args], cwd=self.cwd, env=None if live else self.trap.env())
         self.procs.append(p)
         hwnd, title, waited = find_window(TITLES)
         self.assertIsNotNone(hwnd, "the exe never showed its window")
@@ -184,6 +235,7 @@ class Launch(ExeCase):
         self.assertEqual(self.close(proc, hwnd), 0)
 
     def test_damaged_settings_are_survived_and_repaired(self):
+        """A damaged file means default settings, so the check is on: it goes into the trap, not to the server."""
         for content in ("{not json", '{"options": {"template": "x", "width": "big"}}', "\x00\x01"):
             with open(self.settings, "w", encoding="utf-8") as f:
                 f.write(content)
@@ -199,18 +251,31 @@ class Launch(ExeCase):
         self.assertEqual(title, json.load(open(os.path.join(helpers.ROOT, "lang", "ja.json"), encoding="utf-8"))["app_title"])
         self.close(proc, hwnd)
 
-    def test_new_version_check_records_the_day_in_settings_beside_the_exe(self):
-        """The real exe, the real server: one read-only request with name, version and OS. Skipped when offline."""
-        import datetime
-        import urllib.request
+    def test_the_exe_tries_once_and_an_unreachable_server_is_silent(self):
+        """Check on (the default): exactly one attempt, to the tools site only, after about 1.5 s.
+        It lands in the trap, so the exe sees "offline": no dialog, no crash, no day recorded."""
+        with open(self.settings, "w", encoding="utf-8") as f:
+            json.dump({"lang": "ko"}, f)
+        proc, hwnd, _, _ = self.launch()
+        deadline = time.time() + 15
+        while time.time() < deadline and not self.trap.seen:
+            time.sleep(0.2)
+        time.sleep(3)                                                     # a second attempt would show up by now
+        self.assertIsNone(proc.poll(), "the exe exited on its own")
+        self.assertEqual(self.close(proc, hwnd), 0)
+        self.assertEqual(self.trap.seen, ["CONNECT chaekgalpi.co.kr:443 HTTP/1.1"])
+        saved = json.load(open(self.settings, encoding="utf-8"))
+        self.assertEqual(saved.get("update_check_last", ""), "", "an unanswered check must not use up the day")
 
-        try:
-            urllib.request.urlopen("https://chaekgalpi.co.kr/api/tools/ebookcover/latest?v=0.0.1&os=win", timeout=8).read(1)
-        except Exception as exc:
-            self.skipTest(f"the server cannot be reached from here: {exc}")
+    @unittest.skipUnless(LIVE, "release check only: set ECM_LIVE_UPDATE_CHECK=1 to send the one real request")
+    def test_new_version_check_records_the_day_in_settings_beside_the_exe(self):
+        """The real exe, the real server: one read-only request with name, version and OS.
+        Run once per release (ECM_LIVE_UPDATE_CHECK=1), never in ordinary test runs."""
+        import datetime
+
         with open(self.settings, "w", encoding="utf-8") as f:
             json.dump({"lang": "ko"}, f)                                  # update_check is on by default
-        proc, hwnd, _, _ = self.launch()
+        proc, hwnd, _, _ = self.launch(live=True)
         deadline = time.time() + 25
         recorded = ""
         while time.time() < deadline and not recorded:
@@ -235,6 +300,7 @@ class Launch(ExeCase):
         saved = json.load(open(self.settings, encoding="utf-8"))
         self.assertEqual(saved.get("update_check_last", ""), "")
         self.assertIs(saved["update_check"], False)
+        self.assertEqual(self.trap.seen, [], "switched off, yet it tried to connect")
 
     def test_bundle_contains_every_resource(self):
         from PyInstaller.archive.readers import CArchiveReader

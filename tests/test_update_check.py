@@ -364,7 +364,33 @@ class Settings(unittest.TestCase):
 class NoRealNetworkInTests(unittest.TestCase):
     def test_the_real_fetch_is_blocked_by_the_test_helpers(self):
         self.assertIsNone(uc.fetch(UPDATE_SLUG, "9.9.9"))
-        self.assertIn((UPDATE_SLUG, "9.9.9"), helpers.NETWORK_CALLS)
+        self.assertIn((self.id(), UPDATE_SLUG, "9.9.9"), helpers.NETWORK_CALLS)
+
+    def test_every_road_to_the_server_is_guarded(self):
+        import urllib.request
+
+        self.assertIs(uc.fetch, helpers._offline)                         # what check_async uses by default
+        self.assertIsNone((uc.check_async.__kwdefaults__ or {}).get("fetcher"))
+        self.assertIs(urllib.request.urlopen, helpers._guard_urlopen)
+        self.assertIs(helpers.REAL_FETCH.__kwdefaults__["opener"], helpers._guard_urlopen)
+        before = len(helpers.BLOCKED)
+        self.assertIsNone(helpers.REAL_FETCH(UPDATE_SLUG, "9.9.9"))      # no opener given: the guard answers
+        new = helpers.BLOCKED[before:]
+        self.assertEqual(len(new), 1)
+        self.assertIn("chaekgalpi.co.kr/api/tools/ebookcover/latest", new[0][1])
+        del helpers.BLOCKED[before:]                                      # recorded on purpose: do not fail this test
+
+    def test_a_test_that_reaches_for_the_server_fails(self):
+        class Leaky(unittest.TestCase):
+            def runTest(self):
+                helpers.REAL_FETCH(UPDATE_SLUG, "9.9.9")                 # the guard records it and says "offline"
+
+        before = len(helpers.BLOCKED)
+        result = unittest.TestResult()
+        Leaky().run(result)
+        self.assertEqual(len(result.failures), 1, "a leaking test must fail")
+        self.assertIn("real 책갈피 server", result.failures[0][1])
+        del helpers.BLOCKED[before:]
 
 
 if __name__ == "__main__":
