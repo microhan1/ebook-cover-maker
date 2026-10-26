@@ -60,6 +60,8 @@ python main.py --title "书名" --author "作者" --publisher "出版社" --bg p
 
 内置字体为 Noto Sans CJK 与 Noto Serif CJK（SIL Open Font License 1.1）。许可证原文见 `fonts/LICENSE-Sans.txt`、`fonts/LICENSE-Serif.txt`。
 
+为了让可执行文件更小（约 34MB），程序内置的是字体子集而不是完整字体：全部 11,172 个韩文音节、拉丁字母、数字、符号、假名，以及 KS X 1001、JIS X 0208、GB 2312 的汉字和 Big5 常用繁体字（5,401 个），日文与简体中文的字形保持不变。超出此范围的极罕见字符（例如 鱻）会出现“内置字体中没有的字符将显示为□”的提示。子集由 `tools/subset_fonts.py` 从 `fonts/` 中的原字体生成，`tools/verify_fonts.py` 用来确认它们与原字体的绘制结果完全一致。
+
 ## 系列
 
 - 书签工具：[扫描PDF清晰化](https://github.com/microhan1/scan-pdf-cleanup) · [双页拆分](https://github.com/microhan1/scan-pdf-split) · [裁边](https://github.com/microhan1/TrimPDF) · 电子书文件名整理（即将公开）

@@ -21,6 +21,8 @@ import unittest
 import helpers  # noqa: F401  (must come first)
 from PIL import Image
 
+import presets
+
 EXE = os.path.join(helpers.ROOT, "dist", "ebook-cover-maker.exe")
 TITLES = set()
 for _lang in ("ko", "en", "zh-CN", "ja"):
@@ -308,9 +310,14 @@ class Launch(ExeCase):
         names = set(CArchiveReader(EXE).toc.keys())
         for lang in ("ko", "en", "zh-CN", "ja"):
             self.assertIn(f"lang\\{lang}.json", names)
-        for font in ("NotoSansCJK-Regular.ttc", "NotoSansCJK-Bold.ttc", "NotoSerifCJK-Regular.ttc", "LICENSE-Sans.txt",
-                     "LICENSE-Serif.txt"):
-            self.assertIn(f"fonts\\{font}", names)
+        for stem in presets.FONT_STEMS.values():              # the font subsets, LZMA-packed (tools/subset_fonts.py)
+            for face in presets.FACE_NAMES.values():
+                self.assertIn(f"fonts\\{stem}-{face}.otf.xz", names)
+        for lic in ("LICENSE-Sans.txt", "LICENSE-Serif.txt"):
+            self.assertIn(f"fonts\\{lic}", names)
+        self.assertFalse([n for n in names if n.endswith(".ttc")], "the full collections must not be in the exe")
+        self.assertFalse([n for n in names if n.lower().startswith(("numpy", "lxml", "scipy"))])
+        self.assertLess(os.path.getsize(EXE), 40 * 1000 * 1000, "the exe grew past 40 MB again")
         self.assertTrue(any("tkdnd" in n.lower() for n in names))
         self.assertTrue(any("fontTools" in n for n in names))
 

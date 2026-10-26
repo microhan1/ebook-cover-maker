@@ -10,6 +10,7 @@ import io
 import math
 import os
 import re
+import sys
 import tempfile
 import threading
 import time
@@ -172,17 +173,101 @@ class RenderResult:
 
 
 # ---------------------------------------------------------------- fonts
-_font_cache: dict[tuple[str, int, int], ImageFont.FreeTypeFont] = {}
+# A font choice is a key (sans, sans_bold, serif) and a face index (0 JP, 1 KR, 2 SC). The files behind it are
+# layers: the exe carries a file with the KR glyphs and, for JP and SC, a small file with only the characters
+# whose glyph differs (tools/subset_fonts.py). A character comes from the first layer that has it. From a
+# source tree without those files the original collections in fonts/ are used (one layer, face = TTC index);
+# ECM_FONT_SOURCE=ttc forces that.
+FONT_DIRS = (os.path.join(resource_dir(), "fontbuild"), FONT_DIR)
+_font_cache: dict[tuple[str, int, int, int], ImageFont.FreeTypeFont] = {}
 _cmap_cache: dict[tuple[str, int], set[int]] = {}
+_layers_cache: dict[tuple[str, int], list[tuple[str, int]]] = {}
+_unpack_lock = threading.Lock()
+
+
+def _unpack(xz_path: str) -> str:
+    """The LZMA-packed font file as a plain file (FreeType needs one). Done once per file and run."""
+    import lzma
+
+    if getattr(sys, "frozen", False):
+        out_dir = os.path.join(resource_dir(), "fonts_unpacked")
+    else:
+        out_dir = os.path.join(tempfile.gettempdir(), "ebook-cover-maker-fonts")
+    name = os.path.basename(xz_path)[:-3]
+    st = os.stat(xz_path)
+    dest = os.path.join(out_dir, f"{st.st_size}-{name}")
+    with _unpack_lock:
+        if not os.path.isfile(dest):
+            os.makedirs(out_dir, exist_ok=True)
+            tmp = f"{dest}.{os.getpid()}.{threading.get_ident()}.tmp"
+            try:
+                with lzma.open(xz_path, "rb") as src, open(tmp, "wb") as dst:
+                    while True:
+                        chunk = src.read(1 << 20)
+                        if not chunk:
+                            break
+                        dst.write(chunk)
+                os.replace(tmp, dest)
+            finally:
+                if os.path.exists(tmp):
+                    os.remove(tmp)
+    return dest
+
+
+def _find(name: str) -> str | None:
+    for d in FONT_DIRS:
+        p = os.path.join(d, name)
+        if os.path.isfile(p):
+            return p
+        if os.path.isfile(p + ".xz"):
+            try:
+                return _unpack(p + ".xz")
+            except Exception:                       # damaged archive, disk full ...: report the font as missing
+                return None
+    return None
+
+
+def font_layers(key: str, index: int) -> list[tuple[str, int]]:
+    """(file, index inside the file) for each layer of a font choice, first = own glyphs."""
+    ck = (key, index)
+    got = _layers_cache.get(ck)
+    if got is not None:
+        return got
+    layers: list[tuple[str, int]] = []
+    if os.environ.get("ECM_FONT_SOURCE") != "ttc" and index in presets.FACE_NAMES:
+        stem = presets.FONT_STEMS[key]
+        names = [presets.FACE_NAMES[index]]
+        if index != presets.BASE_FACE:
+            names.append(presets.FACE_NAMES[presets.BASE_FACE])
+        paths = [_find(f"{stem}-{n}.otf") for n in names]
+        if all(paths):
+            layers = [(p, 0) for p in paths]
+    if not layers:
+        ttc = os.path.join(FONT_DIR, presets.FONT_FILES[key])
+        if not os.path.isfile(ttc):
+            raise FontMissing(ttc)
+        layers = [(ttc, index)]
+    _layers_cache[ck] = layers
+    return layers
 
 
 def font_path(key: str) -> str:
-    return os.path.join(FONT_DIR, presets.FONT_FILES[key])
+    """A file that stands for this font in messages (the KR layer)."""
+    try:
+        return font_layers(key, presets.BASE_FACE)[-1][0]
+    except FontMissing as exc:
+        return str(exc)
 
 
 def fonts_available() -> list[str]:
-    """Font keys whose file is missing from fonts/ (empty list = all present)."""
-    return [k for k in presets.FONT_KEYS if not os.path.isfile(font_path(k))]
+    """Font keys whose files are missing (empty list = all present)."""
+    bad = []
+    for k in presets.FONT_KEYS:
+        try:
+            font_layers(k, presets.BASE_FACE)
+        except FontMissing:
+            bad.append(k)
+    return bad
 
 
 def face_index(text: str) -> int:
@@ -197,16 +282,16 @@ def face_index(text: str) -> int:
     return 1
 
 
-def load_font(key: str, index: int, size: int) -> ImageFont.FreeTypeFont:
+def load_font(key: str, index: int, size: int, layer: int = 0) -> ImageFont.FreeTypeFont:
     size = max(4, int(size))
-    ck = (key, index, size)
+    ck = (key, index, size, layer)
     f = _font_cache.get(ck)
     if f is None:
-        path = font_path(key)
+        path, ttc_index = font_layers(key, index)[layer]
         if not os.path.isfile(path):
             raise FontMissing(path)
         try:
-            f = ImageFont.truetype(path, size, index=index)
+            f = ImageFont.truetype(path, size, index=ttc_index)
         except OSError as exc:
             raise FontMissing(path) from exc
         if len(_font_cache) > 256:
@@ -215,14 +300,14 @@ def load_font(key: str, index: int, size: int) -> ImageFont.FreeTypeFont:
     return f
 
 
-def _cmap(key: str, index: int) -> set[int]:
-    ck = (key, index)
+def _cmap(path: str, ttc_index: int) -> set[int]:
+    ck = (path, ttc_index)
     cm = _cmap_cache.get(ck)
     if cm is None:
         try:
             from fontTools.ttLib import TTFont
 
-            tt = TTFont(font_path(key), fontNumber=index, lazy=True)
+            tt = TTFont(path, fontNumber=ttc_index, lazy=True)
             cm = set((tt["cmap"].getBestCmap() or {}).keys())
             tt.close()
         except Exception:
@@ -231,31 +316,41 @@ def _cmap(key: str, index: int) -> set[int]:
     return cm
 
 
-def _covers(key: str, index: int, ch: str) -> bool:
-    cm = _cmap(key, index)
-    return not cm or ord(ch) in cm    # unknown coverage: assume yes, FreeType shows .notdef
+def _locate(key: str, index: int, ch: str, strict: bool = False) -> int | None:
+    """Layer of this font choice that has the character. Unknown coverage counts as covered
+    (FreeType then shows .notdef) unless strict."""
+    for i, (path, ttc_index) in enumerate(font_layers(key, index)):
+        cm = _cmap(path, ttc_index)
+        if (cm and ord(ch) in cm) or (not cm and not strict):
+            return i
+    return None
 
 
-def split_runs(text: str, key: str, index: int) -> tuple[list[tuple[str, str]], str]:
-    """Break text into (run, font_key) pieces so characters the chosen font
-    lacks are drawn with another bundled font. Returns the runs and the
-    characters no bundled font has (they render as boxes)."""
-    runs: list[tuple[str, str]] = []
+def split_runs(text: str, key: str, index: int) -> tuple[list[tuple[str, str, int]], str]:
+    """Break text into (run, font_key, layer) pieces so each character is drawn from a layer that has it,
+    and from another bundled font when the chosen one lacks it. Returns the runs and the characters no
+    bundled font has (they render as boxes)."""
+    runs: list[tuple[str, str, int]] = []
     missing: list[str] = []
     for ch in text:
-        use = key
-        if not ch.isspace() and not _covers(key, index, ch):
-            for alt in presets.FONT_KEYS:
-                if alt != key and _covers(alt, index, ch) and _cmap(alt, index):
-                    use = alt
-                    break
-            else:
-                if ch not in missing:
-                    missing.append(ch)
-        if runs and runs[-1][1] == use:
-            runs[-1] = (runs[-1][0] + ch, use)
+        use, layer = key, _locate(key, index, ch)
+        if layer is None:
+            layer = 0
+            if not ch.isspace():
+                for alt in presets.FONT_KEYS:
+                    if alt == key:
+                        continue
+                    found = _locate(alt, index, ch, strict=True)
+                    if found is not None:
+                        use, layer = alt, found
+                        break
+                else:
+                    if ch not in missing:
+                        missing.append(ch)
+        if runs and runs[-1][1] == use and runs[-1][2] == layer:
+            runs[-1] = (runs[-1][0] + ch, use, layer)
         else:
-            runs.append((ch, use))
+            runs.append((ch, use, layer))
     return runs, "".join(missing)
 
 
@@ -273,15 +368,15 @@ class Text:
 
     def width(self, s: str) -> float:
         runs, _ = split_runs(s, self.key, self.index)
-        return sum(load_font(k, self.index, self.size).getlength(r) for r, k in runs)
+        return sum(load_font(k, self.index, self.size, ly).getlength(r) for r, k, ly in runs)
 
     def draw(self, draw: ImageDraw.ImageDraw, x: float, y_top: float, s: str, fill: str,
              shadow: str | None = None) -> None:
         """Draw one line with its top-left at (x, y_top)."""
         runs, _ = split_runs(s, self.key, self.index)
         base = y_top + self.ascent
-        for r, k in runs:
-            f = load_font(k, self.index, self.size)
+        for r, k, ly in runs:
+            f = load_font(k, self.index, self.size, ly)
             if shadow:
                 off = max(1, self.size // 40)
                 draw.text((x + off, base + off), r, font=f, fill=shadow, anchor="ls")

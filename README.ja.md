@@ -60,6 +60,8 @@ python main.py --title "タイトル" --author "著者" --publisher "出版社" 
 
 内蔵フォントは Noto Sans CJK と Noto Serif CJK（SIL Open Font License 1.1）です。ライセンス原文は `fonts/LICENSE-Sans.txt`、`fonts/LICENSE-Serif.txt` にあります。
 
+実行ファイルを小さくするため（約34MB）、フォント全体ではなくサブセットを入れています。ハングル音節11,172字すべて、ラテン文字・数字・記号・かな、KS X 1001・JIS X 0208・GB 2312 の漢字と Big5 の常用繁体字（5,401字）が入っており、日本語・簡体字中国語の字形もそのままです。この範囲外のごくまれな文字（例：鱻）には「内蔵フォントにない文字は□で表示されます」という警告が出ます。サブセットは `tools/subset_fonts.py` で `fonts/` の原本から作り、`tools/verify_fonts.py` で原本と同じ描画になることを確認します。
+
 ## シリーズ
 
 - しおりツール: [スキャンPDF補正](https://github.com/microhan1/scan-pdf-cleanup) · [見開き分割](https://github.com/microhan1/scan-pdf-split) · [余白カット](https://github.com/microhan1/TrimPDF) · 電子書籍ファイル名整理（近日公開）

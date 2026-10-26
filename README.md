@@ -60,6 +60,8 @@ python main.py --title "제목" --author "저자" --publisher "출판사" --bg p
 
 내장 글꼴은 Noto Sans CJK·Noto Serif CJK(SIL Open Font License 1.1)입니다. 원문은 `fonts/LICENSE-Sans.txt`, `fonts/LICENSE-Serif.txt`에 있습니다.
 
+실행 파일을 작게 하려고(약 34MB) 글꼴 전체가 아니라 부분집합을 담았습니다. 한글 음절 11,172자 전부, 라틴·숫자·기호·가나, KS X 1001 한자·JIS X 0208 한자·GB 2312 한자·Big5 상용 번체자(5,401자)가 들어 있고, 일본어·중국어 간체 글자 모양도 그대로입니다. 이 범위 밖의 아주 드문 글자(예: 鱻)는 「내장 글꼴에 없는 글자는 □로 표시됩니다」 경고가 뜹니다. 부분집합은 `tools/subset_fonts.py`로 `fonts/`의 원본에서 만들고, `tools/verify_fonts.py`로 원본과 같은 모양인지 확인합니다.
+
 ## 시리즈
 
 - 책갈피 툴: [스캔 PDF 보정](https://github.com/microhan1/scan-pdf-cleanup) · [두쪽 나누기](https://github.com/microhan1/scan-pdf-split) · [여백 자르기](https://github.com/microhan1/TrimPDF) · 전자책 파일명 정리(곧 공개)

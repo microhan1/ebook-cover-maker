@@ -60,6 +60,8 @@ To see whether a newer version exists, the app sends only the tool's name and it
 
 The bundled fonts are Noto Sans CJK and Noto Serif CJK (SIL Open Font License 1.1). The license text is in `fonts/LICENSE-Sans.txt` and `fonts/LICENSE-Serif.txt`.
 
+To keep the exe small (about 34 MB) it carries subsets, not the whole fonts: all 11,172 Hangul syllables, Latin, digits, symbols, kana, and the hanja/kanji/hanzi of KS X 1001, JIS X 0208 and GB 2312 plus the 5,401 common Big5 Traditional Chinese characters, with the Japanese and Simplified Chinese glyph shapes unchanged. A very rare character outside that range (for example 鱻) triggers the warning "Characters missing from the bundled fonts show as boxes". `tools/subset_fonts.py` makes the subsets from the originals in `fonts/`, and `tools/verify_fonts.py` checks that they draw exactly like the originals.
+
 ## Series
 
 - Chaekgalpi Tools: [Scan PDF Cleanup](https://github.com/microhan1/scan-pdf-cleanup) · [Scan PDF Split](https://github.com/microhan1/scan-pdf-split) · [Trim PDF](https://github.com/microhan1/TrimPDF) · Ebook Renamer (coming soon)

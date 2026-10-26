@@ -19,6 +19,7 @@ python -m unittest discover -s tests -p "test_cli.py"
 | `test_cli.py` | exit codes, messages in all four languages, bad arguments, EPUB flows |
 | `test_i18n.py` | language files, the arguments the code passes to `t()`, language choice order |
 | `test_update_check.py` | the new-version check: once a day, off switch, what is sent, silent failures, only tools-site links (the network is always faked) |
+| `test_fonts.py` | the font subsets: every Hangul syllable in every font and face, characters in no font are reported, the JP/SC difference files, packed `.otf.xz` files, and glyph bitmaps equal to the original collections (needs `fontbuild/`; `tools/verify_fonts.py` checks every character) |
 | `test_gui.py` | the real Tk window: gate, language switch, truncation, preview speed and ordering, save and EPUB flows, drops |
 | `test_exe.py` | the built exe (skipped unless `dist/ebook-cover-maker.exe` exists); its update check lands in a local proxy trap |
 
@@ -36,6 +37,9 @@ python -m unittest discover -s tests -p "test_cli.py"
   `urllib.request.urlopen` and the real fetch's default opener, and fails any test that reaches the guard.
   `test_exe.py` points the exe's `HTTPS_PROXY` at a local trap that records and drops the connection.
   The one real request is a release check: `ECM_LIVE_UPDATE_CHECK=1`.
+* Fonts: with `fontbuild/` present (made by `python tools/subset_fonts.py`, a few minutes, not in git) the tests
+  draw with the subsets, exactly like the exe; without it they use the collections in `fonts/`.
+  `ECM_FONT_SOURCE=ttc` forces the collections, `python tools/compare_covers.py` draws covers both ways and compares.
 * Tk is only reliable with one window per process. `test_gui.py` shares one window and runs scenarios that
   need a fresh window (damaged settings, closing during work) in their own process through `gui_scenarios.py`.
 * Every CLI test passes `--lang`, and none of them calls `main.py` without title, author and publisher

@@ -40,6 +40,13 @@ FONT_FILES: dict[str, str] = {
     "serif": "NotoSerifCJK-Regular.ttc",
 }
 FONT_KEYS = tuple(FONT_FILES)
+
+# The exe carries small subsets instead of the collections (tools/subset_fonts.py): per font one file with
+# the KR glyphs and everything else, and for the JP and SC faces a file holding only the characters whose
+# glyph differs from the KR one. File names: <stem>-<face>.otf.
+FONT_STEMS: dict[str, str] = {"sans": "sans", "sans_bold": "sans-bold", "serif": "serif"}
+FACE_NAMES: dict[int, str] = {0: "jp", 1: "kr", 2: "sc"}
+BASE_FACE = 1
 DEFAULT_FONT = "sans_bold"
 
 FORMATS = ("jpg", "png")
