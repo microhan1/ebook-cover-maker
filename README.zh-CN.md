@@ -56,6 +56,10 @@ python main.py --title "书名" --author "作者" --publisher "出版社" --bg p
 
 ![新版本提示：窗口下方的一行](docs/update_notice.png)
 
+## 反馈
+
+遇到问题、不方便之处或想要的功能，可以点击窗口右上角的“发送反馈”，或在[书签工具页面](https://chaekgalpi.co.kr/en/tools/ebookcover#feedback)免登录提交。也继续接受 [GitHub Issues](https://github.com/microhan1/ebook-cover-maker/issues)。“发送反馈”只会在浏览器中打开该页面，程序本身不发送任何内容。
+
 ## 字体
 
 内置字体为 Noto Sans CJK 与 Noto Serif CJK（SIL Open Font License 1.1）。许可证原文见 `fonts/LICENSE-Sans.txt`、`fonts/LICENSE-Serif.txt`。

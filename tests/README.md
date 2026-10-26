@@ -19,8 +19,9 @@ python -m unittest discover -s tests -p "test_cli.py"
 | `test_cli.py` | exit codes, messages in all four languages, bad arguments, EPUB flows |
 | `test_i18n.py` | language files, the arguments the code passes to `t()`, language choice order |
 | `test_update_check.py` | the new-version check: once a day, off switch, what is sent, silent failures, only tools-site links (the network is always faked) |
+| `test_feedback.py` | the "send feedback" address: four languages, unknown languages and case, odd versions read back unchanged, texts, `--help`; no socket or urlopen (the button itself is in `test_gui.py`) |
 | `test_fonts.py` | the font subsets: every Hangul syllable in every font and face, characters in no font are reported, the JP/SC difference files, packed `.otf.xz` files, and glyph bitmaps equal to the original collections (needs `fontbuild/`; `tools/verify_fonts.py` checks every character) |
-| `test_gui.py` | the real Tk window: gate, language switch, truncation, preview speed and ordering, save and EPUB flows, drops |
+| `test_gui.py` | the real Tk window: gate, language switch, truncation, preview speed and ordering, save and EPUB flows, drops, the feedback link (browser faked, failures, no network) |
 | `test_exe.py` | the built exe (skipped unless `dist/ebook-cover-maker.exe` exists); its update check lands in a local proxy trap |
 
 ## Options

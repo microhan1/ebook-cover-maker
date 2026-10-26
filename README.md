@@ -56,6 +56,10 @@ python main.py --title "제목" --author "저자" --publisher "출판사" --bg p
 
 ![새 버전 알림: 창 아래에 한 줄로 표시](docs/update_notice.png)
 
+## 의견 보내기
+
+안 되는 것·불편한 것·바라는 기능은 프로그램 오른쪽 위의 「의견 보내기」나 [책갈피 툴 페이지](https://chaekgalpi.co.kr/tools/ebookcover#feedback)에서 로그인 없이 보낼 수 있습니다. [GitHub Issues](https://github.com/microhan1/ebook-cover-maker/issues)도 그대로 받습니다. 「의견 보내기」는 브라우저로 그 페이지를 열 뿐, 프로그램이 직접 보내는 것은 없습니다.
+
 ## 글꼴
 
 내장 글꼴은 Noto Sans CJK·Noto Serif CJK(SIL Open Font License 1.1)입니다. 원문은 `fonts/LICENSE-Sans.txt`, `fonts/LICENSE-Serif.txt`에 있습니다.

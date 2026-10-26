@@ -9,6 +9,8 @@
   "update_available": "有新版本 {latest}（当前 {current}）",
   "btn_update": "更新",
   "btn_later": "以后",
+  "btn_feedback": "发送反馈",
+  "feedback_failed": "无法打开浏览器。请将下面的地址粘贴到浏览器地址栏（在此窗口按 Ctrl+C 可复制内容）。\n\n{url}",
   "lbl_language": "语言",
   "drop_hint": "也可以将背景图片（JPG/PNG）或EPUB文件拖放到此窗口。",
   "field_title": "书名",

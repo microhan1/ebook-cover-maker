@@ -6,8 +6,10 @@ exception raised during a test fails that test.
 """
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
+import socket
 import tempfile
 import threading
 import time
@@ -16,6 +18,8 @@ import tkinter.font as tkfont
 import subprocess
 import sys
 import unittest
+import urllib.request
+import webbrowser
 from unittest import mock
 
 import helpers  # noqa: F401  (must come first)
@@ -27,7 +31,7 @@ import presets
 import render
 import update_check
 from helpers import make_photo, sha
-from version import APP_VERSION
+from version import APP_VERSION, UPDATE_SLUG
 from PIL import Image
 
 try:
@@ -917,6 +921,178 @@ class UpdateNotice(GuiCase):
             a._hide_update_notice()
             a.root.withdraw()
         self.assertEqual(problems, [])
+
+
+# ---------------------------------------------------------------------------
+class FeedbackLink(GuiCase):
+    """「의견 보내기」 opens the feedback box of the tools page in the browser and does nothing else.
+    webbrowser.open is always faked; no socket, no urlopen, no update check may happen."""
+
+    KO = f"https://chaekgalpi.co.kr/tools/ebookcover?utm_source=app&utm_medium=feedback&v={APP_VERSION}#feedback"
+    EN = f"https://chaekgalpi.co.kr/en/tools/ebookcover?utm_source=app&utm_medium=feedback&v={APP_VERSION}#feedback"
+
+    def setUp(self):
+        super().setUp()
+        self.net: list = []
+        self.browser: list = []
+        real_connect = socket.socket.connect
+
+        def connect(sock, address):
+            self.net.append(("connect", address))
+            return real_connect(sock, address)
+
+        patches = [(socket.socket, "connect", connect),
+                   (socket, "create_connection", lambda *a, **k: self.net.append(("create_connection", a))),
+                   (urllib.request, "urlopen", lambda *a, **k: self.net.append(("urlopen", a))),
+                   (update_check, "check_async", lambda *a, **k: self.net.append(("check_async", a))),
+                   (gui.webbrowser, "open", lambda url, *a, **k: self.browser.append(url) or True)]
+        for target, name, fn in patches:
+            p = mock.patch.object(target, name, fn)
+            p.start()
+            self.addCleanup(p.stop)
+        self.fetches = len(helpers.NETWORK_CALLS)
+        a = self.app
+        a._hide_update_notice()
+        a.upd = update_check.UpdatePrefs()
+        a.var_update_check.set(True)
+        self.reset_settings()
+
+    def tearDown(self):
+        super().tearDown()
+        self.assertEqual(self.net, [], "the feedback link touched the network")
+        self.assertEqual(len(helpers.NETWORK_CALLS), self.fetches, "the feedback link started an update check")
+
+    def switch(self, lang: str) -> None:
+        a = self.app
+        a.cmb_lang.current(i18n.LANGS.index(lang))
+        a._on_lang()
+
+    def state(self) -> dict:
+        a = self.app
+        return {"options": a.options(), "lang": i18n.current_lang(), "combo": a.cmb_lang.get(),
+                "update_check": a.var_update_check.get(), "upd": dataclasses.asdict(a.upd),
+                "notice": (a._update_info, bool(a.frm_update.winfo_manager())), "running": a._running,
+                "closing": a._closing, "result": a._result_path, "status": str(a.lbl_status.cget("text")),
+                "log": self.log_text(), "title": a.root.title(), "settings": os.path.exists(i18n.SETTINGS_PATH),
+                "buttons": [str(w.cget("state")) for w in (a.btn_save, a.btn_epub, a.btn_feedback, a.cmb_lang)],
+                "alive": alive(a)}
+
+    def test_sits_in_the_header_before_the_update_checkbox(self):
+        a = self.app
+        self.assertEqual(a.btn_feedback.master, a.chk_update.master)
+        self.assertEqual(a.btn_feedback.master, a.cmb_lang.master)
+        order = a.btn_feedback.master.pack_slaves()
+        self.assertLess(order.index(a.btn_feedback), order.index(a.chk_update))
+        self.assertEqual(str(a.btn_feedback.cget("style")), "Link.TButton")
+
+    def test_one_click_opens_the_page_once(self):
+        self.app.btn_feedback.invoke()
+        self.assertEqual(self.browser, [self.KO])
+        self.assertEqual(self.dialogs, [])
+
+    def test_each_screen_language_opens_its_page(self):
+        for lang in i18n.LANGS:
+            self.browser.clear()
+            self.switch(lang)
+            self.app.btn_feedback.invoke()
+            self.assertEqual(self.browser, [self.KO if lang == "ko" else self.EN], lang)
+            self.assertEqual(self.browser, [update_check.feedback_url(UPDATE_SLUG, APP_VERSION, lang)])
+        self.assertEqual(self.dialogs, [])
+
+    def test_switching_language_changes_the_next_click(self):
+        a = self.app
+        for lang, expected in (("ko", self.KO), ("en", self.EN), ("ko", self.KO), ("ja", self.EN),
+                               ("zh-CN", self.EN), ("ko", self.KO)):
+            self.switch(lang)
+            a.btn_feedback.invoke()
+            self.assertEqual(self.browser[-1], expected, lang)
+        self.assertEqual(len(self.browser), 6)
+
+    def test_the_label_follows_the_language(self):
+        for lang in i18n.LANGS:
+            self.switch(lang)
+            self.assertEqual(str(self.app.btn_feedback.cget("text")), lang_text(lang, "btn_feedback"))
+        self.switch("ko")
+        self.assertEqual(str(self.app.btn_feedback.cget("text")), "의견 보내기")
+
+    def test_no_browser_shows_the_address_and_changes_nothing(self):
+        a = self.app
+        a.var_title.set("제목")
+        a.var_publisher.set("출판사")
+        self.settle()
+
+        def refuse(url, *x, **k):
+            self.browser.append(url)
+            return False
+
+        def raise_error(exc):
+            def fn(url, *x, **k):
+                self.browser.append(url)
+                raise exc
+            return fn
+
+        failures = {"False": refuse, "None": lambda url, *x, **k: self.browser.append(url),
+                    "webbrowser.Error": raise_error(webbrowser.Error("could not locate runnable browser")),
+                    "OSError": raise_error(OSError(5, "Access is denied")),
+                    "FileNotFoundError": raise_error(FileNotFoundError("no shell"))}
+        for lang in i18n.LANGS:
+            self.switch(lang)
+            url = update_check.feedback_url(UPDATE_SLUG, APP_VERSION, lang)
+            for name, fn in failures.items():
+                with self.subTest(lang=lang, failure=name):
+                    self.dialogs.clear()
+                    self.browser.clear()
+                    before = self.state()
+                    with mock.patch.object(gui.webbrowser, "open", fn):
+                        a.btn_feedback.invoke()
+                    self.assertEqual(self.browser, [url], "exactly one try")
+                    self.assertEqual(self.dialogs, [("warning", (lang_text(lang, "feedback_failed", url=url),))])
+                    self.assertIn(url, self.dialogs[0][1][0])
+                    self.assertEqual(self.state(), before)
+        a.btn_feedback.invoke()                                         # and it works again afterwards
+        self.assertEqual(self.browser[-1], self.EN)
+
+    def test_success_shows_nothing_and_changes_nothing(self):
+        before = self.state()
+        self.app.btn_feedback.invoke()
+        self.assertEqual(self.dialogs, [])
+        self.assertEqual(self.state(), before)
+
+    def test_leaves_the_update_check_alone(self):
+        a = self.app
+        info = update_check.UpdateInfo("0.9.0", APP_VERSION, "https://chaekgalpi.co.kr/tools/ebookcover")
+        a._on_update_result(info, True)
+        self.assertTrue(a.frm_update.winfo_manager())
+        prefs = dataclasses.asdict(a.upd)
+        saved = open(i18n.SETTINGS_PATH, encoding="utf-8").read()
+        for checked in (True, False):
+            a.var_update_check.set(checked)
+            a.btn_feedback.invoke()
+            self.assertTrue(a.frm_update.winfo_manager(), "the notice was hidden")
+            self.assertIs(a._update_info, info)
+            self.assertEqual(dataclasses.asdict(a.upd), prefs)
+            self.assertEqual(open(i18n.SETTINGS_PATH, encoding="utf-8").read(), saved, "settings were written")
+        self.assertEqual(self.browser, [self.KO, self.KO])
+        a.var_update_check.set(True)
+        with mock.patch.object(gui.webbrowser, "open") as opener:       # [Update] still opens its own page
+            a.btn_update_open.invoke()
+        opener.assert_called_once_with(info.url)
+
+    def test_works_while_a_save_is_running(self):
+        a = self.app
+        a._set_running(True)
+        try:
+            a.btn_feedback.invoke()
+        finally:
+            a._set_running(False)
+        self.assertEqual(self.browser, [self.KO])
+
+    def test_the_address_comes_from_constants_only(self):
+        """A settings file that tries to change the address changes nothing."""
+        put(i18n.SETTINGS_PATH, json.dumps({"feedback_url": "https://evil.example/", "url": "https://evil.example/",
+                                            "slug": "other", "lang": "en"}))
+        self.app.btn_feedback.invoke()
+        self.assertEqual(self.browser, [self.KO])
 
 
 # ---------------------------------------------------------------------------

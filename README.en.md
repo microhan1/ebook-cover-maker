@@ -56,6 +56,10 @@ To see whether a newer version exists, the app sends only the tool's name and it
 
 ![New-version notice: one line at the bottom of the window](docs/update_notice.png)
 
+## Feedback
+
+Tell us what's broken or missing with **Send feedback** at the top right of the window, or on the [Chaekgalpi tools page](https://chaekgalpi.co.kr/en/tools/ebookcover#feedback), no sign-in needed. [GitHub Issues](https://github.com/microhan1/ebook-cover-maker/issues) are welcome too. **Send feedback** only opens that page in your browser; the program itself sends nothing.
+
 ## Fonts
 
 The bundled fonts are Noto Sans CJK and Noto Serif CJK (SIL Open Font License 1.1). The license text is in `fonts/LICENSE-Sans.txt` and `fonts/LICENSE-Serif.txt`.

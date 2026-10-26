@@ -230,6 +230,11 @@ class App:
                   foreground=[("disabled", "white")], bordercolor=[("disabled", "#93c5fd")])
         style.configure("TCheckbutton", background=BG, indicatorsize=self.px(14))
         style.map("TCheckbutton", background=[("active", BG)])
+        self.font_link = self.font_body.copy()
+        self.font_link.configure(underline=True)
+        style.configure("Link.TButton", background=BG, foreground=ACCENT, font=self.font_link, borderwidth=0,
+                        relief="flat", padding=(self.px(2), self.px(2)), lightcolor=BG, darkcolor=BG, bordercolor=BG)
+        style.map("Link.TButton", background=[("active", BG)], foreground=[("active", ACCENT_DARK)])
         style.configure("AccentSmall.TButton", background=ACCENT, foreground="white", bordercolor=ACCENT,
                         lightcolor=ACCENT, darkcolor=ACCENT, font=self.font_bold, padding=(self.px(12), self.px(3)))
         style.map("AccentSmall.TButton", background=[("active", ACCENT_DARK)])
@@ -283,6 +288,9 @@ class App:
         self._reg(ttk.Label(head, style="Muted.TLabel"), "app_tagline").grid(row=1, column=0, sticky="w")
         lang = ttk.Frame(head)
         lang.grid(row=0, column=1, rowspan=2, sticky="e")
+        self.btn_feedback = self._reg(ttk.Button(lang, style="Link.TButton", cursor="hand2",
+                                                 command=self._send_feedback), "btn_feedback")
+        self.btn_feedback.pack(side="left", padx=(0, self.px(14)))
         self.chk_update = self._reg(ttk.Checkbutton(lang, variable=self.var_update_check,
                                                     command=self._on_update_toggle), "opt_update_check")
         self.chk_update.pack(side="left", padx=(0, self.px(18)))
@@ -816,6 +824,17 @@ class App:
                 except Exception:
                     pass
         self._hide_update_notice()
+
+    def _send_feedback(self) -> None:
+        """The feedback box on the tools page, in the browser. Nothing is sent from here;
+        when no browser opens, the address is shown so it can be copied (Ctrl+C copies the box)."""
+        url = update_check.feedback_url(UPDATE_SLUG, APP_VERSION, i18n.current_lang())   # the language at the click
+        try:
+            opened = webbrowser.open(url)
+        except Exception:                               # webbrowser.Error, OSError, ...
+            opened = False
+        if not opened:
+            messagebox.showwarning(t("app_title"), t("feedback_failed", url=url), parent=self.root)
 
     def _update_later(self) -> None:
         if self._update_info is not None:

@@ -269,6 +269,25 @@ class Launch(ExeCase):
         saved = json.load(open(self.settings, encoding="utf-8"))
         self.assertEqual(saved.get("update_check_last", ""), "", "an unanswered check must not use up the day")
 
+    def test_starts_and_closes_behind_a_dead_proxy(self):
+        """The feedback link release check (2026-10-26): with HTTP(S)_PROXY pointing at a port nobody
+        listens on, the window opens, the update check fails quietly, and WM_CLOSE ends it. The
+        feedback link is not clicked: that would open a real browser."""
+        with open(self.settings, "w", encoding="utf-8") as f:
+            json.dump({"lang": "ko"}, f)                                  # the update check is on
+        dead = "http://127.0.0.1:9"
+        env = dict(os.environ, HTTPS_PROXY=dead, HTTP_PROXY=dead, https_proxy=dead, http_proxy=dead)
+        env.pop("NO_PROXY", None)
+        env.pop("no_proxy", None)
+        proc = subprocess.Popen([self.exe], cwd=self.cwd, env=env)
+        self.procs.append(proc)
+        hwnd, title, _ = find_window(TITLES)
+        self.assertIsNotNone(hwnd, "the exe never showed its window")
+        self.assertEqual(title, "전자책 표지 만들기")
+        time.sleep(4)                                                     # past the 1.5 s check and its failure
+        self.assertIsNone(proc.poll(), "the exe exited on its own")
+        self.assertEqual(self.close(proc, hwnd), 0)
+
     @unittest.skipUnless(LIVE, "release check only: set ECM_LIVE_UPDATE_CHECK=1 to send the one real request")
     def test_new_version_check_records_the_day_in_settings_beside_the_exe(self):
         """The real exe, the real server: one read-only request with name, version and OS.

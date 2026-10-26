@@ -56,6 +56,10 @@ python main.py --title "タイトル" --author "著者" --publisher "出版社" 
 
 ![新バージョンのお知らせ：ウィンドウ下の1行](docs/update_notice.png)
 
+## ご意見
+
+不具合・使いにくい点・ほしい機能は、ウィンドウ右上の「ご意見を送る」または[しおりツールのページ](https://chaekgalpi.co.kr/en/tools/ebookcover#feedback)からログインなしで送れます。[GitHub Issues](https://github.com/microhan1/ebook-cover-maker/issues) も引き続き受け付けています。「ご意見を送る」はそのページをブラウザで開くだけで、プログラム自身は何も送信しません。
+
 ## フォント
 
 内蔵フォントは Noto Sans CJK と Noto Serif CJK（SIL Open Font License 1.1）です。ライセンス原文は `fonts/LICENSE-Sans.txt`、`fonts/LICENSE-Serif.txt` にあります。

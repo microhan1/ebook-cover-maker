@@ -42,6 +42,22 @@ def link_for(info: UpdateInfo, lang: str) -> str:
     return info.url
 
 
+FEEDBACK_EN_LANGS = ("en", "ja", "zh-cn")   # the site has no Japanese or Chinese page
+
+
+def feedback_url(slug: str, version: str | None, lang: str | None) -> str:
+    """The "send feedback" box at the bottom of this tool's page on the tools site. Built
+    from constants only; the program just opens it in the browser and sends nothing itself.
+    utm_source=app makes the site file the message under the Windows program, #feedback
+    scrolls down to the box. An empty version leaves out v."""
+    code = (lang or "").strip().replace("_", "-").lower()
+    page = "en/tools" if code in FEEDBACK_EN_LANGS else "tools"
+    query = "utm_source=app&utm_medium=feedback"
+    if version and version.strip():
+        query += "&v=" + urllib.parse.quote(version, safe="")
+    return f"{SITE}{page}/{urllib.parse.quote(slug, safe='')}?{query}#feedback"
+
+
 @dataclasses.dataclass
 class UpdatePrefs:
     """The three settings of this feature; they live in settings.json next to the exe."""

@@ -9,6 +9,8 @@
   "update_available": "새 버전이 나왔습니다: {latest} (현재 {current})",
   "btn_update": "업데이트",
   "btn_later": "다음에",
+  "btn_feedback": "의견 보내기",
+  "feedback_failed": "브라우저를 열지 못했습니다. 아래 주소를 브라우저 주소창에 붙여 넣어 주세요. (이 창에서 Ctrl+C 를 누르면 내용이 복사됩니다)\n\n{url}",
   "lbl_language": "언어",
   "drop_hint": "배경 이미지(JPG·PNG)나 EPUB 파일을 이 창에 끌어다 놓아도 됩니다.",
   "field_title": "제목",
