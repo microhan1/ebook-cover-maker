@@ -70,7 +70,7 @@ python main.py --title "タイトル" --author "著者" --publisher "出版社" 
 
 - しおりツール: [スキャンPDF補正](https://github.com/microhan1/scan-pdf-cleanup) · [見開き分割](https://github.com/microhan1/scan-pdf-split) · [余白カット](https://github.com/microhan1/TrimPDF) · 電子書籍ファイル名整理（近日公開）
 - インストール不要のブラウザ版: [見開き分割](https://microhan1.github.io/spread-split/)
-- [しおりライブラリ](https://chaekgalpi.co.kr/tools/ebookcover?utm_source=github&utm_medium=referral&utm_campaign=tool_cta&utm_content=ebookcover) — 読んだ本と読書メモを記録するウェブサービス。
+- [しおりライブラリ](https://chaekgalpi.co.kr/en/tools/ebookcover?utm_source=github&utm_medium=referral&utm_campaign=tool_cta&utm_content=ebookcover) — 読んだ本と読書メモを記録するウェブサービス。
 
 ## ライセンス
 

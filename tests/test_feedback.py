@@ -246,6 +246,13 @@ class Readmes(unittest.TestCase):
                 self.assertTrue(links, "no feedback link")
                 self.assertEqual(set(links), {expected})
 
+    def test_each_readme_tools_page_link_follows_the_same_rule(self):
+        for name, expected in self.EXPECTED.items():
+            with self.subTest(readme=name):
+                pages = re.findall(r"\]\((https://chaekgalpi\.co\.kr/[^\s?#)]*)\?utm_source=github", self.read(name))
+                self.assertTrue(pages, "no tools page link")
+                self.assertEqual(set(pages), {expected.removesuffix("#feedback")})
+
     def test_every_feedback_address_is_a_markdown_link(self):
         for name in self.EXPECTED:
             with self.subTest(readme=name):

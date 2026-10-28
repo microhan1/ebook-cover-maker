@@ -70,7 +70,7 @@ python main.py --title "书名" --author "作者" --publisher "出版社" --bg p
 
 - 书签工具：[扫描PDF清晰化](https://github.com/microhan1/scan-pdf-cleanup) · [双页拆分](https://github.com/microhan1/scan-pdf-split) · [裁边](https://github.com/microhan1/TrimPDF) · 电子书文件名整理（即将公开）
 - 无需安装的网页版：[跨页拆分](https://microhan1.github.io/spread-split/)
-- [书签库](https://chaekgalpi.co.kr/tools/ebookcover?utm_source=github&utm_medium=referral&utm_campaign=tool_cta&utm_content=ebookcover) — 记录读过的书和读书笔记的网络服务。
+- [书签库](https://chaekgalpi.co.kr/en/tools/ebookcover?utm_source=github&utm_medium=referral&utm_campaign=tool_cta&utm_content=ebookcover) — 记录读过的书和读书笔记的网络服务。
 
 ## 许可证
 
