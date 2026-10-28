@@ -83,6 +83,29 @@ def capture(hwnd) -> Image.Image:
     return Image.frombuffer("RGBA", (w, h), buf, "raw", "BGRA", 0, 1).convert("RGB")
 
 
+def cover_text(shot: Image.Image) -> tuple[int, int, int]:
+    """The cover is the big flat #1f1f1f rectangle: how many sampled pixels it has, its
+    height, and how many light (text) pixels the bottom band, which holds the publisher, has."""
+    w, h = shot.size
+    px = shot.load()
+    xs, ys = [], []
+    for y in range(0, h, 2):
+        for x in range(0, w, 2):
+            if px[x, y] == (0x1f, 0x1f, 0x1f):
+                xs.append(x)
+                ys.append(y)
+    if not xs:
+        return 0, 0, 0
+    x0, x1, y0, y1 = min(xs), max(xs), min(ys), max(ys)
+    text_pixels = 0
+    for y in range(int(y1 - (y1 - y0) * 0.13), y1):
+        for x in range(x0, x1):
+            r, g, b = px[x, y]
+            if r > 150 and g > 150 and b > 140:
+                text_pixels += 1
+    return len(xs), y1 - y0, text_pixels
+
+
 LIVE = os.environ.get("ECM_LIVE_UPDATE_CHECK") == "1"     # the one real request, for a release check only
 
 
@@ -156,8 +179,8 @@ class ExeCase(unittest.TestCase):
         time.sleep(0.3)
         self._tmp.cleanup()
 
-    def launch(self, *args, live: bool = False):
-        p = subprocess.Popen([self.exe, *args], cwd=self.cwd, env=None if live else self.trap.env())
+    def launch(self, *args, live: bool = False, env: dict | None = None):
+        p = subprocess.Popen([self.exe, *args], cwd=self.cwd, env=None if live else (env or self.trap.env()))
         self.procs.append(p)
         hwnd, title, waited = find_window(TITLES)
         self.assertIsNotNone(hwnd, "the exe never showed its window")
@@ -184,6 +207,25 @@ class Launch(ExeCase):
         self.assertIn("options", saved)
         self.assertFalse(os.path.exists(os.path.join(self.cwd, "settings.json")), "settings went to the working directory")
 
+    def test_opens_and_closes_behind_a_dead_proxy(self):
+        """Cut off from the internet (HTTP(S)_PROXY at a closed port), the window still opens,
+        lives through its start-up update check and closes cleanly. Nothing is clicked."""
+        with open(self.settings, "w", encoding="utf-8") as f:
+            json.dump({"lang": "ko", "update_check": True}, f)            # let the check run and fail
+        dead = "http://127.0.0.1:9"
+        env = dict(os.environ, HTTPS_PROXY=dead, HTTP_PROXY=dead, https_proxy=dead, http_proxy=dead)
+        env.pop("NO_PROXY", None)
+        env.pop("no_proxy", None)
+        proc, hwnd, title, waited = self.launch(env=env)
+        self.assertIn(title, TITLES)
+        time.sleep(4.0)                                    # the check goes out 1.5 s after the window
+        self.assertIsNone(proc.poll(), "the exe quit by itself")
+        self.assertTrue(user32.IsWindowVisible(hwnd))
+        self.assertEqual(self.close(proc, hwnd), 0)
+        self.assertEqual(self.trap.seen, [], "the request went somewhere other than the dead proxy")
+
+    PREVIEW_WAIT = 20.0                                    # seconds the first preview may take
+
     def test_bundled_fonts_draw_the_preview(self):
         """Settings supply a publisher and author, so the preview must show real text
         in the bundled Noto font; a missing font would leave the cover blank."""
@@ -193,28 +235,20 @@ class Launch(ExeCase):
                       f, ensure_ascii=False)
         proc, hwnd, title, _ = self.launch()
         self.assertEqual(title, json.load(open(os.path.join(helpers.ROOT, "lang", "ko.json"), encoding="utf-8"))["app_title"])
-        time.sleep(2.5)                                    # first preview
-        shot = capture(hwnd)
+        # The first preview comes a moment after the window; under load (the whole suite, a
+        # busy machine) that moment was longer than a fixed 2.5 s. Look again until it is
+        # there, for up to PREVIEW_WAIT seconds, and judge the last picture.
+        deadline = time.time() + self.PREVIEW_WAIT
+        while True:
+            shot = capture(hwnd)
+            cover, height, text_pixels = cover_text(shot)
+            if (cover > 5000 and height > 200 and text_pixels > 60) or time.time() > deadline:
+                break
+            time.sleep(0.25)
         shot.save(os.path.join(self._tmp.name, "exe_window.png"))
         self.close(proc, hwnd)
-        # the cover is the big flat #1f1f1f rectangle; find it and look for light text inside it
-        w, h = shot.size
-        px = shot.load()
-        xs, ys = [], []
-        for y in range(0, h, 2):
-            for x in range(0, w, 2):
-                if px[x, y] == (0x1f, 0x1f, 0x1f):
-                    xs.append(x)
-                    ys.append(y)
-        self.assertGreater(len(xs), 5000, "no cover preview was drawn in the window")
-        x0, x1, y0, y1 = min(xs), max(xs), min(ys), max(ys)
-        self.assertGreater((y1 - y0), 200)
-        text_pixels = 0
-        for y in range(int(y1 - (y1 - y0) * 0.13), y1):          # the bottom band holds the publisher
-            for x in range(x0, x1):
-                r, g, b = px[x, y]
-                if r > 150 and g > 150 and b > 140:
-                    text_pixels += 1
+        self.assertGreater(cover, 5000, "no cover preview was drawn in the window")
+        self.assertGreater(height, 200)
         self.assertGreater(text_pixels, 60, "the publisher name was not drawn: the font probably is not bundled")
 
     def test_arguments_open_the_window_instead_of_running_a_hidden_cli(self):

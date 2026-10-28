@@ -17,6 +17,8 @@ import urllib.parse
 import urllib.request
 from typing import Callable
 
+import i18n
+
 API = "https://chaekgalpi.co.kr/api/tools/{slug}/latest"
 SITE = "https://chaekgalpi.co.kr/"  # the notice only ever opens a page on this site
 TIMEOUT = 4.0
@@ -34,24 +36,29 @@ class UpdateInfo:
     url_en: str = ""          # the English tools page, when the server offers one
 
 
-def link_for(info: UpdateInfo, lang: str) -> str:
-    """The page [Update] opens: the Korean page on a Korean screen, otherwise the English
-    page when the server gave one on the tools site, else the Korean page."""
-    if lang != "ko" and info.url_en.startswith(SITE):
+def is_korean(lang: str | None) -> bool:
+    """Which page a screen language gets, the same rule across the series: a code whose
+    first part is "ko" (ko, ko-KR, ko_KR, KO) gets the Korean page, every other code - en,
+    ja, zh-CN, zh-TW, fr, anything unknown - the English one (the site has no Japanese or
+    Chinese page). No language at all means this tool's default screen language."""
+    code = (lang or "").strip() or i18n.DEFAULT_LANG
+    return code.replace("_", "-").split("-")[0].lower() == "ko"
+
+
+def link_for(info: UpdateInfo, lang: str | None) -> str:
+    """The page [Update] opens: the Korean page on a Korean screen (is_korean), otherwise
+    the English page when the server gave one on the tools site, else the Korean page."""
+    if not is_korean(lang) and info.url_en.startswith(SITE):
         return info.url_en
     return info.url
-
-
-FEEDBACK_EN_LANGS = ("en", "ja", "zh-cn")   # the site has no Japanese or Chinese page
 
 
 def feedback_url(slug: str, version: str | None, lang: str | None) -> str:
     """The "send feedback" box at the bottom of this tool's page on the tools site. Built
     from constants only; the program just opens it in the browser and sends nothing itself.
     utm_source=app makes the site file the message under the Windows program, #feedback
-    scrolls down to the box. An empty version leaves out v."""
-    code = (lang or "").strip().replace("_", "-").lower()
-    page = "en/tools" if code in FEEDBACK_EN_LANGS else "tools"
+    scrolls down to the box. The page follows is_korean(). An empty version leaves out v."""
+    page = "tools" if is_korean(lang) else "en/tools"
     query = "utm_source=app&utm_medium=feedback"
     if version and version.strip():
         query += "&v=" + urllib.parse.quote(version, safe="")

@@ -10,6 +10,7 @@
   "btn_update": "Update",
   "btn_later": "Later",
   "btn_feedback": "Send feedback",
+  "tip_feedback": "Tell us what's broken or missing (opens your browser)",
   "feedback_failed": "Could not open your browser. Paste this address into your browser's address bar (press Ctrl+C in this box to copy its text).\n\n{url}",
   "lbl_language": "Language",
   "drop_hint": "You can also drop a background image (JPG/PNG) or an EPUB file onto this window.",

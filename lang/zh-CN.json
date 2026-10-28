@@ -10,6 +10,7 @@
   "btn_update": "更新",
   "btn_later": "以后",
   "btn_feedback": "发送反馈",
+  "tip_feedback": "告诉我们问题或建议（将打开浏览器）",
   "feedback_failed": "无法打开浏览器。请将下面的地址粘贴到浏览器地址栏（在此窗口按 Ctrl+C 可复制内容）。\n\n{url}",
   "lbl_language": "语言",
   "drop_hint": "也可以将背景图片（JPG/PNG）或EPUB文件拖放到此窗口。",

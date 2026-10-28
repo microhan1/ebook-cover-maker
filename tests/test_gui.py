@@ -9,6 +9,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import os
+import re
 import socket
 import tempfile
 import threading
@@ -56,6 +57,7 @@ ERRORS: list = []
 PREVIEW_DONE = [0]
 APPLIED_GEN = [0]            # the newest render that was actually shown
 APP: "gui.App | None" = None
+APP_STARTED = [0.0]          # time.time() when the module's window was made
 _ORIG_HOOK = threading.excepthook
 
 
@@ -68,6 +70,7 @@ def setUpModule():
     i18n.set_lang("ko", persist=False)
     GuiCase.reset_settings()
     try:
+        APP_STARTED[0] = time.time()
         APP = gui.App()
     except tk.TclError as exc:
         raise unittest.SkipTest(f"no display: {exc}")
@@ -924,7 +927,7 @@ class UpdateNotice(GuiCase):
 
 
 # ---------------------------------------------------------------------------
-class FeedbackLink(GuiCase):
+class FeedbackCase(GuiCase):
     """「의견 보내기」 opens the feedback box of the tools page in the browser and does nothing else.
     webbrowser.open is always faked; no socket, no urlopen, no update check may happen."""
 
@@ -950,6 +953,10 @@ class FeedbackLink(GuiCase):
             p = mock.patch.object(target, name, fn)
             p.start()
             self.addCleanup(p.stop)
+        # the window's own start-up check (stopped by helpers.py) must not be counted against the link
+        rest = APP_STARTED[0] + update_check.DELAY_MS / 1000 + 1.0 - time.time()
+        if rest > 0:
+            sleep_pump(self.app, rest)
         self.fetches = len(helpers.NETWORK_CALLS)
         a = self.app
         a._hide_update_notice()
@@ -958,6 +965,9 @@ class FeedbackLink(GuiCase):
         self.reset_settings()
 
     def tearDown(self):
+        a = self.app
+        a.tip_feedback.hide()
+        a.btn_feedback.state(["!focus", "!active", "!pressed"])
         super().tearDown()
         self.assertEqual(self.net, [], "the feedback link touched the network")
         self.assertEqual(len(helpers.NETWORK_CALLS), self.fetches, "the feedback link started an update check")
@@ -977,6 +987,8 @@ class FeedbackLink(GuiCase):
                 "buttons": [str(w.cget("state")) for w in (a.btn_save, a.btn_epub, a.btn_feedback, a.cmb_lang)],
                 "alive": alive(a)}
 
+
+class FeedbackLink(FeedbackCase):
     def test_sits_in_the_header_before_the_update_checkbox(self):
         a = self.app
         self.assertEqual(a.btn_feedback.master, a.chk_update.master)
@@ -1093,6 +1105,314 @@ class FeedbackLink(GuiCase):
                                             "slug": "other", "lang": "en"}))
         self.app.btn_feedback.invoke()
         self.assertEqual(self.browser, [self.KO])
+
+
+# ---------------------------------------------------------------------------
+# Keys and the note, series follow-up of 2026-10-27. A generated key event only reaches a
+# widget when the window has the system's keyboard focus, and taking that focus would steal
+# it from whoever is typing. So the tests run the very script Tk binds to a key (what Tk runs
+# when the key arrives) and follow the Tab order with tk_focusNext / tk_focusPrev, which is
+# what Tk's own <Tab> and <Shift-Tab> bindings use. Mouse in/out are Tk events on the widget.
+REAL_TIP_DELAY = gui.Tooltip.DELAY_MS
+
+
+def press(widget, sequence: str) -> str:
+    """Run the script bound to `sequence` on this widget as Tk would; "break" when it stops
+    the class bindings that come after it."""
+    script = widget.bind(sequence)
+    assert script, f"nothing bound to {sequence}"
+    fields = dict.fromkeys("#bhkstwxyEXYDKNAT", "0")
+    fields["W"] = str(widget)
+    script = re.sub(r"%([#a-zA-Z])", lambda m: fields.get(m.group(1), "??"), script)
+    code = widget.tk.eval(f"catch {{{script}}} ::press_result")      # 3 is Tcl's code for break
+    assert code in ("0", "3"), widget.tk.eval("set ::press_result")
+    return "break" if code == "3" else ""
+
+
+class FeedbackKeyboard(FeedbackCase):
+    """a. Tab reaches the link, Enter and Space open the page exactly once, the focus shows."""
+
+    def setUp(self):
+        super().setUp()
+        self.app.root.deiconify()                     # ttk skips widgets that are not on screen in the Tab order
+        self.app.root.update()
+
+    def tearDown(self):
+        super().tearDown()
+        self.app.root.withdraw()
+
+    def test_the_link_is_a_tab_stop(self):
+        link = self.app.btn_feedback
+        self.assertEqual(str(link.cget("takefocus")), "ttk::takefocus")
+        self.assertEqual(str(link.tk.call("ttk::takefocus", str(link))), "1")
+
+    def test_tab_goes_from_the_widget_before_to_the_link_and_shift_tab_back(self):
+        a = self.app
+        link = a.btn_feedback
+        before = link.tk_focusPrev()
+        self.assertIsNotNone(before)
+        self.assertIsNot(before, link)
+        self.assertIs(before.tk_focusNext(), link, "Tab from the widget before does not land on the link")
+        self.assertIs(link.tk_focusNext(), a.chk_update, "Tab from the link does not go to the checkbox")
+        self.assertIs(a.chk_update.tk_focusPrev(), link, "Shift+Tab from the checkbox does not come back")
+        self.assertIs(link.tk_focusPrev(), before)
+
+    def test_the_whole_tab_cycle_passes_the_link_once_both_ways(self):
+        link = self.app.btn_feedback
+        forward, w = [], link
+        for _ in range(300):
+            w = w.tk_focusNext()
+            forward.append(w)
+            if w is link:
+                break
+        self.assertIs(forward[-1], link, "Tab never came back to the link")
+        self.assertEqual(forward.count(link), 1)
+        backward, w = [], link
+        for _ in range(300):
+            w = w.tk_focusPrev()
+            backward.append(w)
+            if w is link:
+                break
+        self.assertEqual(backward[:-1], list(reversed(forward[:-1])), "Shift+Tab is not Tab backwards")
+        self.assertIn(self.app.chk_update, forward)
+        self.assertIn(self.app.cmb_lang, forward)
+
+    def test_enter_and_space_each_open_the_page_exactly_once(self):
+        link = self.app.btn_feedback
+        for key in ("<Return>", "<KP_Enter>", "<space>"):
+            with self.subTest(key=key):
+                self.browser.clear()
+                self.assertEqual(press(link, key), "break", "the class binding would run as well")
+                sleep_pump(self.app, 0.25)            # ttk's own Space handler would invoke a moment later
+                self.assertEqual(self.browser, [self.KO])
+        self.assertEqual(self.dialogs, [])
+
+    def test_the_link_comes_first_in_its_bind_tags(self):
+        link = self.app.btn_feedback
+        self.assertEqual(link.bindtags()[0], str(link))
+
+    def test_keys_and_mouse_together(self):
+        a = self.app
+        link = a.btn_feedback
+        for key in ("<Return>", "<space>", "<KP_Enter>"):
+            press(link, key)
+        link.invoke()
+        sleep_pump(a, 0.25)
+        self.assertEqual(self.browser, [self.KO] * 4)
+
+    def test_keys_use_the_language_on_screen(self):
+        for lang in i18n.LANGS:
+            for key in ("<Return>", "<space>"):
+                with self.subTest(lang=lang, key=key):
+                    self.browser.clear()
+                    self.switch(lang)
+                    press(self.app.btn_feedback, key)
+                    self.assertEqual(self.browser, [update_check.feedback_url(UPDATE_SLUG, APP_VERSION, lang)])
+
+    def test_keys_with_no_browser_show_the_address_once(self):
+        link = self.app.btn_feedback
+        for key in ("<Return>", "<space>"):
+            with self.subTest(key=key):
+                self.dialogs.clear()
+                with mock.patch.object(gui.webbrowser, "open", lambda url, *x, **k: self.browser.append(url) or False):
+                    press(link, key)
+                self.assertEqual(len(self.dialogs), 1)
+                self.assertIn(self.KO, self.dialogs[0][1][0])
+
+    def test_focus_is_visible_and_does_not_change_the_size(self):
+        a = self.app
+        link = a.btn_feedback
+        style = gui.ttk.Style(a.root)
+        a.root.update()
+        size = (link.winfo_reqwidth(), link.winfo_reqheight())
+        shown = (link.winfo_width(), link.winfo_height())
+        head = (a.chk_update.winfo_x(), a.cmb_lang.winfo_x())
+        self.assertEqual(style.lookup("Link.TButton", "background", ["!focus"]), gui.BG)
+        self.assertEqual(style.lookup("Link.TButton", "background", ["focus"]), gui.LINK_FOCUS_BG)
+        self.assertNotEqual(gui.LINK_FOCUS_BG, gui.BG)
+        self.assertEqual(style.lookup("Link.TButton", "background", ["focus", "active"]), gui.LINK_FOCUS_BG)
+        self.assertEqual(style.lookup("Link.TButton", "foreground", ["focus"]), gui.ACCENT_DARK)
+        self.assertIn("Button.focus", str(style.layout("Link.TButton")), "the theme's focus ring is gone")
+        for on in (True, False, True, False):
+            link.state(["focus"] if on else ["!focus"])
+            a.root.update()
+            self.assertEqual(link.instate(["focus"]), on)
+            self.assertEqual((link.winfo_reqwidth(), link.winfo_reqheight()), size)
+            self.assertEqual((link.winfo_width(), link.winfo_height()), shown)
+            self.assertEqual((a.chk_update.winfo_x(), a.cmb_lang.winfo_x()), head, "the header moved")
+        self.assertEqual(self.browser, [], "the focus alone opened the page")
+
+    def test_other_keys_do_nothing(self):
+        link = self.app.btn_feedback
+        keys = sorted(s for s in link.bind() if s.startswith("<Key"))
+        self.assertEqual(keys, ["<Key-KP_Enter>", "<Key-Return>", "<Key-space>"])
+        for seq in ("<Key-a>", "<Key-1>", "<Escape>", "<Up>", "<Down>", "<Delete>", "<BackSpace>", "<F1>", "<Tab>"):
+            with self.subTest(key=seq):
+                self.assertEqual(link.bind(seq), "")
+                self.assertEqual(link.bind_class("TButton", seq), "")
+        self.assertEqual(self.browser, [])
+
+
+class FeedbackTooltip(FeedbackCase):
+    """b. The small note while the mouse is over the link."""
+
+    def setUp(self):
+        super().setUp()
+        a = self.app
+        self.geometry = a.root.geometry()
+        p = mock.patch.object(gui.Tooltip, "DELAY_MS", 40)
+        p.start()
+        self.addCleanup(p.stop)
+        a.root.deiconify()
+        a.root.update()
+
+    def tearDown(self):
+        super().tearDown()
+        a = self.app
+        a.root.geometry(self.geometry)
+        a.root.withdraw()
+
+    def tip(self):
+        return self.app.tip_feedback
+
+    def shown(self) -> bool:
+        tip = self.tip()
+        # mapped is not enough: the label inside can still be 1 pixel wide for a moment
+        return (tip.tip is not None and bool(tip.tip.winfo_ismapped()) and tip.tip.winfo_width() > 1
+                and tip.label.winfo_width() > 1)
+
+    def hover(self) -> None:
+        self.app.btn_feedback.event_generate("<Enter>", x=2, y=2)
+        self.assertTrue(pump(self.app, self.shown, 3.0), "the note did not appear")
+
+    def leave(self) -> None:
+        self.app.btn_feedback.event_generate("<Leave>", x=-5, y=-5)
+        self.app.root.update()
+
+    def text(self) -> str:
+        return str(self.tip().label.cget("text"))
+
+    def test_the_delay_is_about_half_a_second(self):
+        self.assertGreaterEqual(REAL_TIP_DELAY, 400)
+        self.assertLessEqual(REAL_TIP_DELAY, 500)
+
+    def test_appears_on_hover_and_goes_on_leave(self):
+        self.hover()
+        self.assertEqual(self.text(), lang_text("ko", "tip_feedback"))
+        self.assertEqual(self.tip().tip.wm_overrideredirect(), True)
+        self.leave()
+        self.assertIsNone(self.tip().tip)
+        self.assertEqual(self.browser, [])
+
+    def test_waits_before_showing(self):
+        with mock.patch.object(gui.Tooltip, "DELAY_MS", REAL_TIP_DELAY):
+            t0 = time.time()
+            self.app.btn_feedback.event_generate("<Enter>", x=2, y=2)
+            sleep_pump(self.app, 0.25)
+            self.assertIsNone(self.tip().tip, "the note came before the delay")
+            self.assertTrue(pump(self.app, self.shown, 3.0))
+            self.assertGreaterEqual(time.time() - t0, REAL_TIP_DELAY / 1000 - 0.02)
+
+    def test_leaving_before_the_delay_shows_nothing(self):
+        with mock.patch.object(gui.Tooltip, "DELAY_MS", REAL_TIP_DELAY):
+            for stay in (0.0, 0.1, 0.3):
+                with self.subTest(stay=stay):
+                    self.app.btn_feedback.event_generate("<Enter>", x=2, y=2)
+                    sleep_pump(self.app, stay)
+                    self.leave()
+                    sleep_pump(self.app, REAL_TIP_DELAY / 1000 + 0.3)
+                    self.assertIsNone(self.tip().tip)
+                    self.assertIsNone(self.tip()._job)
+
+    def test_a_click_hides_it_and_opens_the_page_once(self):
+        a = self.app
+        self.hover()
+        a.btn_feedback.event_generate("<ButtonPress-1>", x=2, y=2)
+        a.root.update()
+        self.assertIsNone(self.tip().tip, "the note stayed after the click")
+        a.btn_feedback.event_generate("<ButtonRelease-1>", x=2, y=2)
+        sleep_pump(a, 0.2)
+        self.assertEqual(self.browser, [self.KO])
+        self.assertIsNone(self.tip().tip, "the note came back over the browser")
+
+    def test_a_key_hides_it_and_opens_the_page_once(self):
+        self.hover()
+        press(self.app.btn_feedback, "<Return>")
+        self.assertIsNone(self.tip().tip)
+        self.assertEqual(self.browser, [self.KO])
+
+    def test_the_four_texts(self):
+        texts = {}
+        for lang in i18n.LANGS:
+            self.switch(lang)
+            self.hover()
+            texts[lang] = self.text()
+            self.assertEqual(texts[lang], lang_text(lang, "tip_feedback"), lang)
+            self.assertTrue(texts[lang].strip(), lang)
+            self.leave()
+        self.assertEqual(len(set(texts.values())), 4, texts)
+
+    def test_switching_language_while_it_shows_changes_the_words(self):
+        a = self.app
+        self.hover()
+        for lang in ("en", "ja", "zh-CN", "ko", "en"):
+            self.switch(lang)
+            a.root.update()
+            self.assertTrue(self.shown(), f"the note went away on switching to {lang}")
+            self.assertEqual(self.text(), lang_text(lang, "tip_feedback"))
+            self.assertInside(lang, "switch")
+
+    def assertInside(self, lang: str, where: str, in_window: bool = True) -> None:
+        a = self.app
+        tip, link = self.tip().tip, a.btn_feedback
+        tip.update_idletasks()
+        a.root.update()
+        x, y, w, h = tip.winfo_rootx(), tip.winfo_rooty(), tip.winfo_width(), tip.winfo_height()
+        left, top, right, bottom = gui._monitor_area(a.root)
+        msg = f"{lang} {where}: note at {x},{y} {w}x{h}, screen {left},{top}-{right},{bottom}, " \
+              f"window {a.root.winfo_rootx()}+{a.root.winfo_width()}"
+        self.assertGreaterEqual(x, left, msg)
+        self.assertLessEqual(x + w, right, msg)
+        self.assertGreaterEqual(y, top, msg)
+        self.assertLessEqual(y + h, bottom, msg)
+        if in_window:
+            self.assertGreaterEqual(x, a.root.winfo_rootx(), msg)
+            self.assertLessEqual(x + w, a.root.winfo_rootx() + a.root.winfo_width(), msg)
+        self.assertGreaterEqual(y, link.winfo_rooty() + link.winfo_height(), msg + " (not under the link)")
+        self.assertLessEqual(w, a.px(320) + 40, msg + " (not wrapped)")
+
+    def test_inside_the_window_and_the_screen_at_both_screen_edges(self):
+        a = self.app
+        mw, mh = a._min_size
+        left, top, right, bottom = gui._monitor_area(a.root)
+        self.assertGreater(right - left, mw)
+        a.root.geometry(f"{mw}x{mh}+{left}+{top}")
+        a.root.update()
+        frame = a.root.winfo_rootx() - a.root.winfo_x()          # the window border left of the inside
+        places = {"left edge": (left, True), "right edge": (right - mw - 2 * frame, True),
+                  "half off the right edge": (right - mw // 2, False), "half off the left edge": (left - mw // 2, False)}
+        for lang in i18n.LANGS:
+            self.switch(lang)
+            for where, (x, in_window) in places.items():
+                with self.subTest(lang=lang, where=where):
+                    a.root.geometry(f"{mw}x{mh}+{x}+{top}")
+                    sleep_pump(a, 0.05)
+                    self.assertEqual(a.root.winfo_width(), mw)
+                    self.assertEqual(a.root.winfo_x(), x, "the window is not where the test put it")
+                    self.hover()
+                    self.assertInside(lang, where, in_window)
+                    self.leave()
+        self.assertEqual(self.browser, [])
+
+    def test_the_screen_area_is_the_one_the_window_is_on(self):
+        a = self.app
+        left, top, right, bottom = gui._monitor_area(a.root)
+        self.assertGreater(right, left)
+        self.assertGreater(bottom, top)
+        cx = a.root.winfo_rootx() + a.root.winfo_width() // 2
+        self.assertTrue(left <= cx <= right)
+        with mock.patch.object(gui.sys, "platform", "linux"):     # without Windows: the whole screen
+            self.assertEqual(gui._monitor_area(a.root), (0, 0, a.root.winfo_screenwidth(), a.root.winfo_screenheight()))
 
 
 # ---------------------------------------------------------------------------

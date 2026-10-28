@@ -41,6 +41,8 @@ NOTICE_DARK = "#b45309"          # warning text: NOTICE itself is too pale for s
 PREVIEW_BG = "#e5e7eb"
 UPDATE_BG = "#eff6ff"
 UPDATE_BORDER = "#bfdbfe"
+LINK_FOCUS_BG = "#dbeafe"        # the feedback link while it has the keyboard focus
+TIP_BG = "#ffffe1"               # the small note under the feedback link
 UI_FONTS = {
     "ko": ("Malgun Gothic",),
     "ja": ("Yu Gothic UI", "Meiryo UI", "MS UI Gothic"),
@@ -83,6 +85,109 @@ def _saved_options(settings: dict) -> Options:
             val = default
         kw[key] = val
     return Options(**kw).validated()
+
+
+def _monitor_area(widget: tk.Misc) -> tuple[int, int, int, int]:
+    """Left, top, right, bottom of the screen the window is on (its work area, without the
+    taskbar), so a window on a second monitor keeps its notes there."""
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            class MONITORINFO(ctypes.Structure):
+                _fields_ = [("cbSize", wintypes.DWORD), ("rcMonitor", wintypes.RECT),
+                            ("rcWork", wintypes.RECT), ("dwFlags", wintypes.DWORD)]
+
+            user32 = ctypes.windll.user32
+            user32.MonitorFromWindow.restype = wintypes.HMONITOR
+            user32.MonitorFromWindow.argtypes = (wintypes.HWND, wintypes.DWORD)
+            hwnd = widget.winfo_toplevel().winfo_id()
+            info = MONITORINFO(cbSize=ctypes.sizeof(MONITORINFO))
+            if user32.GetMonitorInfoW(user32.MonitorFromWindow(hwnd, 2), ctypes.byref(info)):   # 2: nearest
+                r = info.rcWork
+                return r.left, r.top, r.right, r.bottom
+        except Exception:
+            pass
+    return 0, 0, widget.winfo_screenwidth(), widget.winfo_screenheight()
+
+
+class Tooltip:
+    """A small note under a widget while the mouse is over it; tkinter only. It shows
+    DELAY_MS after the mouse comes in, goes when it leaves or clicks, and its text is
+    looked up on every show, so it follows the language switch."""
+
+    DELAY_MS = 450
+
+    def __init__(self, widget: tk.Misc, key: str, wrap: int = 320) -> None:
+        self.widget, self.key, self.wrap = widget, key, wrap
+        self.tip: tk.Toplevel | None = None
+        self.label: tk.Label | None = None
+        self._job: str | None = None
+        widget.bind("<Enter>", lambda e: self._schedule(), add="+")
+        for seq in ("<Leave>", "<ButtonPress>", "<Destroy>"):
+            widget.bind(seq, lambda e: self.hide(), add="+")
+
+    @property
+    def text(self) -> str:
+        return t(self.key)
+
+    def _schedule(self) -> None:
+        self._cancel()
+        self._job = self.widget.after(self.DELAY_MS, self.show)
+
+    def _cancel(self) -> None:
+        if self._job is not None:
+            try:
+                self.widget.after_cancel(self._job)
+            except tk.TclError:
+                pass
+            self._job = None
+
+    def show(self) -> None:
+        self._job = None
+        if self.tip is None:
+            self.tip = tk.Toplevel(self.widget)
+            self.tip.wm_overrideredirect(True)
+            self.tip.wm_attributes("-topmost", True)
+            self.label = tk.Label(self.tip, justify="left", background=TIP_BG, foreground=TEXT, relief="solid",
+                                  borderwidth=1, padx=6, pady=3, wraplength=self.wrap)
+            self.label.pack()
+        self.label.configure(text=self.text)
+        self.place()
+
+    def place(self) -> None:
+        """Right edge under the widget's right edge, then pulled inside the window and the
+        screen, so a narrow window or a window at the screen edge never cuts the note."""
+        w, tip = self.widget, self.tip
+        tip.update_idletasks()
+        tw, th = tip.winfo_reqwidth(), tip.winfo_reqheight()
+        x, y = w.winfo_rootx() + w.winfo_width() - tw, w.winfo_rooty() + w.winfo_height() + 4
+        top = w.winfo_toplevel()
+        left, right = top.winfo_rootx(), top.winfo_rootx() + top.winfo_width()
+        if tw <= right - left:
+            x = min(max(x, left), right - tw)
+        s_left, s_top, s_right, s_bottom = _monitor_area(w)
+        x = min(max(x, s_left), s_right - tw)
+        if y + th > s_bottom:                          # no room below: above the widget
+            y = w.winfo_rooty() - th - 4
+        y = min(max(y, s_top), s_bottom - th)
+        tip.wm_geometry(f"+{x}+{y}")
+
+    def refresh(self) -> None:
+        """After a language switch: new words in the note that is showing."""
+        if self.tip is not None and self.label is not None:
+            self.label.configure(text=self.text)
+            self.place()
+
+    def hide(self) -> None:
+        self._cancel()
+        if self.tip is not None:
+            try:
+                self.tip.destroy()
+            except tk.TclError:
+                pass
+            self.tip = self.label = None
 
 
 class App:
@@ -234,7 +339,9 @@ class App:
         self.font_link.configure(underline=True)
         style.configure("Link.TButton", background=BG, foreground=ACCENT, font=self.font_link, borderwidth=0,
                         relief="flat", padding=(self.px(2), self.px(2)), lightcolor=BG, darkcolor=BG, bordercolor=BG)
-        style.map("Link.TButton", background=[("active", BG)], foreground=[("active", ACCENT_DARK)])
+        # with the keyboard focus the link gets a light blue box (colour only, the size stays)
+        style.map("Link.TButton", background=[("focus", LINK_FOCUS_BG), ("active", BG)],
+                  foreground=[("focus", ACCENT_DARK), ("active", ACCENT_DARK)])
         style.configure("AccentSmall.TButton", background=ACCENT, foreground="white", bordercolor=ACCENT,
                         lightcolor=ACCENT, darkcolor=ACCENT, font=self.font_bold, padding=(self.px(12), self.px(3)))
         style.map("AccentSmall.TButton", background=[("active", ACCENT_DARK)])
@@ -291,6 +398,9 @@ class App:
         self.btn_feedback = self._reg(ttk.Button(lang, style="Link.TButton", cursor="hand2",
                                                  command=self._send_feedback), "btn_feedback")
         self.btn_feedback.pack(side="left", padx=(0, self.px(14)))
+        for seq in ("<Return>", "<KP_Enter>", "<space>"):      # Tab reaches it; Enter and Space open it once
+            self.btn_feedback.bind(seq, lambda e: (self.btn_feedback.invoke(), "break")[1])
+        self.tip_feedback = Tooltip(self.btn_feedback, "tip_feedback", wrap=self.px(320))
         self.chk_update = self._reg(ttk.Checkbutton(lang, variable=self.var_update_check,
                                                     command=self._on_update_toggle), "opt_update_check")
         self.chk_update.pack(side="left", padx=(0, self.px(18)))
@@ -483,6 +593,7 @@ class App:
         if self._update_info is not None:                # the notice follows the language too
             self.lbl_update.configure(text=t("update_available", latest=self._update_info.latest,
                                              current=self._update_info.current))
+        self.tip_feedback.refresh()
         if self._status_key:
             self._set_status(self._status_key, **self._status_kwargs)
 
@@ -829,6 +940,7 @@ class App:
         """The feedback box on the tools page, in the browser. Nothing is sent from here;
         when no browser opens, the address is shown so it can be copied (Ctrl+C copies the box)."""
         url = update_check.feedback_url(UPDATE_SLUG, APP_VERSION, i18n.current_lang())   # the language at the click
+        self.tip_feedback.hide()                        # the note would otherwise stay over the browser
         try:
             opened = webbrowser.open(url)
         except Exception:                               # webbrowser.Error, OSError, ...

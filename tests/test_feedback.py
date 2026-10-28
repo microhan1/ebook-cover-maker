@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import socket
 import unittest
 import urllib.parse
@@ -62,9 +63,17 @@ class Address(NoNetwork):
             expected = KO if lang == "ko" else EN
             self.assertEqual(uc.feedback_url(UPDATE_SLUG, "0.2.1", lang), expected, lang)
 
-    def test_unknown_or_missing_language_gives_the_korean_page(self):
-        for lang in (None, "", "   ", "fr", "de-DE", "zh-TW", "kor", "english", "e n", "ko-KR?x"):
+    def test_unknown_language_gives_the_english_page(self):
+        """Series rule of 2026-10-27: only a code whose first part is ko gets the Korean page."""
+        for lang in ("fr", "de-DE", "zh-TW", "kor", "korean", "english", "e n", "x-ko", "-ko", "_ko"):
+            self.assertEqual(uc.feedback_url("ebookcover", "0.2.1", lang), EN, repr(lang))
+        for lang in ("ko-KR?x", "ko-", "ko_"):
             self.assertEqual(uc.feedback_url("ebookcover", "0.2.1", lang), KO, repr(lang))
+
+    def test_missing_language_follows_the_default_screen_language(self):
+        self.assertEqual(i18n.DEFAULT_LANG, "en")
+        for lang in (None, "", "   ", "\t"):
+            self.assertEqual(uc.feedback_url("ebookcover", "0.2.1", lang), EN, repr(lang))
 
     def test_language_codes_are_matched_regardless_of_case(self):
         for lang in ("EN", "En", " en ", "JA", "Ja", "zh-cn", "ZH-CN", "Zh-Cn", "zh_CN", "zh_cn"):
@@ -145,8 +154,123 @@ class Version(NoNetwork):
                     url.encode("ascii")                                    # nothing raw left in the address
 
 
+class LanguageRule(NoNetwork):
+    """One rule for every page this program opens (2026-10-27, the same across the series):
+    a code whose first part is ko -> the Korean page, every other code -> the English page,
+    no code -> this tool's default screen language. is_korean() decides for both the
+    feedback link and the [Update] button of the new-version notice."""
+
+    KOREAN = ("ko", "ko-KR", "ko_KR", "KO", "Ko", "Ko-kr", "KO-KR", " ko ", "ko\t", "ko-Kore-KR")
+    ENGLISH = ("en", "ja", "zh", "zh-CN", "zh_CN", "zh-TW", "zh-Hant", "fr", "de", "EN", "en-US", "en_GB",
+               "ja-JP", "pt-BR", "xx", "x", "kor", "korean", "eko", "?", "123", "한국어", "日本語")
+    UPD_KO = "https://chaekgalpi.co.kr/tools/ebookcover?utm_source=app&utm_medium=update"
+    UPD_EN = "https://chaekgalpi.co.kr/en/tools/ebookcover?utm_source=app&utm_medium=update"
+
+    def page(self, url: str) -> str:
+        return urllib.parse.urlsplit(url).path
+
+    def test_korean_codes(self):
+        for lang in self.KOREAN:
+            with self.subTest(lang=lang):
+                self.assertTrue(uc.is_korean(lang))
+                self.assertEqual(self.page(uc.feedback_url(UPDATE_SLUG, APP_VERSION, lang)), "/tools/ebookcover")
+
+    def test_every_other_code(self):
+        for lang in self.ENGLISH:
+            with self.subTest(lang=lang):
+                self.assertFalse(uc.is_korean(lang))
+                self.assertEqual(self.page(uc.feedback_url(UPDATE_SLUG, APP_VERSION, lang)), "/en/tools/ebookcover")
+
+    def test_no_code_follows_the_default_screen_language(self):
+        self.assertEqual(i18n.DEFAULT_LANG, "en")              # this tool opens in English when it cannot tell
+        for lang in (None, "", " ", "   ", "\t\n"):
+            with self.subTest(lang=lang):
+                self.assertFalse(uc.is_korean(lang))
+                self.assertEqual(self.page(uc.feedback_url(UPDATE_SLUG, APP_VERSION, lang)), "/en/tools/ebookcover")
+                with mock.patch.object(i18n, "DEFAULT_LANG", "ko"):    # and the rule really reads the default
+                    self.assertTrue(uc.is_korean(lang))
+                    self.assertEqual(self.page(uc.feedback_url(UPDATE_SLUG, APP_VERSION, lang)), "/tools/ebookcover")
+
+    def test_every_address_has_the_same_shape(self):
+        for lang in (*self.KOREAN, *self.ENGLISH, None, ""):
+            for version in (APP_VERSION, "", None):
+                url = uc.feedback_url(UPDATE_SLUG, version, lang)
+                with self.subTest(lang=lang, version=version):
+                    expected = "https://chaekgalpi.co.kr/" + ("" if uc.is_korean(lang) else "en/") + \
+                               "tools/ebookcover?utm_source=app&utm_medium=feedback" + \
+                               (f"&v={version}" if version else "") + "#feedback"
+                    self.assertEqual(url, expected)
+
+    def test_the_update_page_uses_the_same_rule(self):
+        both = uc.UpdateInfo("9.9.9", APP_VERSION, self.UPD_KO, self.UPD_EN)
+        korean_only = uc.UpdateInfo("9.9.9", APP_VERSION, self.UPD_KO)
+        for lang in (*self.KOREAN, *self.ENGLISH, None, "", "  "):
+            with self.subTest(lang=lang):
+                expected = self.UPD_KO if uc.is_korean(lang) else self.UPD_EN
+                self.assertEqual(uc.link_for(both, lang), expected)
+                self.assertEqual(uc.link_for(korean_only, lang), self.UPD_KO)   # no English page offered
+                feedback_korean = self.page(uc.feedback_url(UPDATE_SLUG, APP_VERSION, lang)) == "/tools/ebookcover"
+                self.assertEqual(uc.link_for(both, lang) == self.UPD_KO, feedback_korean)
+
+    def test_the_program_languages(self):
+        self.assertEqual([uc.is_korean(c) for c in i18n.LANGS], [c == "ko" for c in i18n.LANGS])
+
+    def test_one_rule_in_the_code(self):
+        """Both pages go through is_korean(); no second list of languages is left behind."""
+        with open(os.path.join(helpers.ROOT, "update_check.py"), encoding="utf-8") as f:
+            source = f.read()
+        self.assertNotIn("FEEDBACK_EN_LANGS", source)
+        self.assertNotIn('lang != "ko"', source)
+        self.assertEqual(source.count("is_korean(lang)"), 2)
+
+
+class Readmes(unittest.TestCase):
+    """d. The feedback link of each README: the Korean page in Korean, the English page in
+    every other language (the site has no Japanese or Chinese page), always written as
+    [text](address) so no bracket or particle after it becomes part of the address."""
+
+    EXPECTED = {"README.md": "https://chaekgalpi.co.kr/tools/ebookcover#feedback",
+                "README.en.md": "https://chaekgalpi.co.kr/en/tools/ebookcover#feedback",
+                "README.ja.md": "https://chaekgalpi.co.kr/en/tools/ebookcover#feedback",
+                "README.zh-CN.md": "https://chaekgalpi.co.kr/en/tools/ebookcover#feedback"}
+
+    def read(self, name: str) -> str:
+        with open(os.path.join(helpers.ROOT, name), encoding="utf-8") as f:
+            return f.read()
+
+    def test_each_readme_links_to_its_page(self):
+        for name, expected in self.EXPECTED.items():
+            with self.subTest(readme=name):
+                text = self.read(name)
+                links = re.findall(r"https://chaekgalpi\.co\.kr/\S*?#feedback", text)
+                self.assertTrue(links, "no feedback link")
+                self.assertEqual(set(links), {expected})
+
+    def test_every_feedback_address_is_a_markdown_link(self):
+        for name in self.EXPECTED:
+            with self.subTest(readme=name):
+                text = self.read(name)
+                for m in re.finditer(r"https://chaekgalpi\.co\.kr/[^\s]*", text):
+                    self.assertEqual(text[m.start() - 2:m.start()], "](", m.group(0))
+                    self.assertRegex(m.group(0),
+                                     r"^https://chaekgalpi\.co\.kr/[A-Za-z0-9/_.-]*(\?[A-Za-z0-9_=&.-]*)?(#feedback)?\)",
+                                     "something follows the address inside the link")
+
+
 class Texts(unittest.TestCase):
     BUTTON = {"ko": "의견 보내기", "en": "Send feedback", "ja": "ご意見を送る", "zh-CN": "发送反馈"}
+    TIP = {"ko": "안 되는 것·불편한 것·바라는 기능을 알려 주세요(브라우저가 열립니다)",
+           "en": "Tell us what's broken or missing (opens your browser)",
+           "ja": "不具合・ご要望をお知らせください（ブラウザが開きます）",
+           "zh-CN": "告诉我们问题或建议（将打开浏览器）"}
+
+    def test_the_note_text_in_every_language(self):
+        tips = [lang_file(lang)["tip_feedback"] for lang in i18n.LANGS]
+        for lang, tip in zip(i18n.LANGS, tips):
+            self.assertEqual(tip, self.TIP[lang], lang)
+            self.assertTrue(tip.strip(), lang)
+            self.assertEqual(tip, tip.strip(), lang)
+        self.assertEqual(len(set(tips)), len(i18n.LANGS), "two languages share one note")
 
     def test_the_button_text_in_every_language(self):
         for lang in i18n.LANGS:

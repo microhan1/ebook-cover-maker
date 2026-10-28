@@ -10,6 +10,7 @@
   "btn_update": "업데이트",
   "btn_later": "다음에",
   "btn_feedback": "의견 보내기",
+  "tip_feedback": "안 되는 것·불편한 것·바라는 기능을 알려 주세요(브라우저가 열립니다)",
   "feedback_failed": "브라우저를 열지 못했습니다. 아래 주소를 브라우저 주소창에 붙여 넣어 주세요. (이 창에서 Ctrl+C 를 누르면 내용이 복사됩니다)\n\n{url}",
   "lbl_language": "언어",
   "drop_hint": "배경 이미지(JPG·PNG)나 EPUB 파일을 이 창에 끌어다 놓아도 됩니다.",
